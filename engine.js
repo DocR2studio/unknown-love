@@ -706,6 +706,7 @@
     completeTaskBy("enter", loc.id);
     renderHotspots();
     autosave();
+    if (!(opts && opts.skipEvent)) maybeTriggerEvent();
   }
   function ayudarEvaAction() {
     const src = (typeof EVA_ROOM_ACTIONS !== "undefined" && EVA_ROOM_ACTIONS.ayudarEva) || {
@@ -1801,9 +1802,20 @@
   function storyEvents() {
     return typeof STORY_EVENTS !== "undefined" && Array.isArray(STORY_EVENTS) ? STORY_EVENTS : [];
   }
+  function markEventDone(id) {
+    if (!id) return;
+    if (!Array.isArray(state.eventsDone)) state.eventsDone = [];
+    if (state.eventsDone.indexOf(id) === -1) {
+      state.eventsDone = state.eventsDone.concat([id]);
+    }
+    autosave();
+  }
+  function eventWasPlayed(id) {
+    return !!id && (state.eventsDone || []).indexOf(id) !== -1;
+  }
   function eventPending(ev) {
     if (!ev || !ev.id || !ev.location) return false;
-    if ((state.eventsDone || []).indexOf(ev.id) !== -1) return false;
+    if (ev.repeatable !== true && eventWasPlayed(ev.id)) return false;
     if (ev.enabled === false) return false;
     if (ev.moment && ev.moment !== state.moment) return false;
     if (ev.minDay && (state.day || 0) < ev.minDay) return false;
@@ -1892,8 +1904,9 @@
   function playStoryEvent(ev) {
     closeEvaMeet(true);
     showPlainLocationBg(locById(state.location));
+    markEventDone(ev && ev.id);
     talkDoneHook = () => {
-      if ((state.eventsDone || []).indexOf(ev.id) === -1) state.eventsDone = (state.eventsDone || []).concat([ev.id]);
+      markEventDone(ev && ev.id);
       if (ev.completes) completeMission(ev.completes);
       else { renderHotspots(); autosave(); }
     };
@@ -1950,8 +1963,11 @@
     if (key && typeof MediaStore !== "undefined") {
       try {
         const m = await MediaStore.mediaFor(key);
-        if (m && m.imageURL) return m.imageURL;
+        if (m && m.imageURL) return (/^(blob:|data:)/i.test(m.imageURL) ? m.imageURL : assetUrl(m.imageURL));
       } catch (e) { /* ignore */ }
+    }
+    if (key && typeof SHIPPED_MEDIA !== "undefined" && SHIPPED_MEDIA[key] && SHIPPED_MEDIA[key].image) {
+      return assetUrl(SHIPPED_MEDIA[key].image);
     }
     if (shot.image) return assetUrl(shot.image);
     return "";
@@ -2039,6 +2055,7 @@
     if ($("action-bar")) $("action-bar").hidden = true;
     if ($("hotspots")) setSvgHidden($("hotspots"), true);
     state.eventCine = ev.id;
+    markEventDone(ev.id);
     eventFront = "a";
     const game = $("screen-game");
     if (game) game.classList.add("is-event-cine");
@@ -2060,9 +2077,7 @@
       await waitTalk(ev.close);
       if (run !== eventRun) return;
     }
-    if ((state.eventsDone || []).indexOf(ev.id) === -1) {
-      state.eventsDone = (state.eventsDone || []).concat([ev.id]);
-    }
+    markEventDone(ev && ev.id);
     if (ev.completes) completeMission(ev.completes);
     else { renderHotspots(); autosave(); }
     if (stage) stage.classList.add("is-leaving");
@@ -4060,6 +4075,18 @@
       enLab.appendChild(en);
       enLab.appendChild(document.createTextNode(" Activado"));
       block.appendChild(enLab);
+      const repLab = document.createElement("label");
+      repLab.className = "event-enabled";
+      const rep = document.createElement("input");
+      rep.type = "checkbox";
+      rep.checked = ev.repeatable === true;
+      rep.addEventListener("change", () => {
+        ev.repeatable = !!rep.checked;
+        saveStoryPatch();
+      });
+      repLab.appendChild(rep);
+      repLab.appendChild(document.createTextNode(" Repetible (si no, solo una vez por partida)"));
+      block.appendChild(repLab);
 
       const exitInp = document.createElement("select");
       [{ id: "", label: "Quedarse en el lugar" }].concat(locs.map((l) => ({ id: l.id, label: l.name || l.id }))).forEach((o) => {
@@ -5240,7 +5267,7 @@
     });
   }
 
-  window.__VN = { showScreen, enterHouse, openMap, openEditor, openName, playBoot, showFullLine, advance, playTitleIntro, openBag, openSettings, openPhone, openChatThread, openTasks, travelTo, setPeek, getExpr: () => currentExpr, getState: () => state, openEvaMeet, closeEvaMeet, addAfecto, setAfecto, addEvaInfoBar, setEvaInfoBar, setEditorLive, ejectFromHouse, evaStatus: currentEvaStatus, weekdayName: (d) => weekdayName(d != null ? d : state.day), renderHUD, renderActions, showRoomEva, isEvaHere, isEvaCleaning, currentSceneVariant, isEvaSleeping, refreshRoomVisual, startIntroCine, skipIntroCine, startMission, completeMission, maybeTriggerEvent, renderHotspots, eventDoorTargets, pickElogiarTier, playAccionOption, findAccionOption, applyStatDelta, buildEvaMeetMenu, playEventSequence, stopEventSequence };
+  window.__VN = { showScreen, enterHouse, openMap, openEditor, openName, playBoot, showFullLine, advance, playTitleIntro, openBag, openSettings, openPhone, openChatThread, openTasks, travelTo, setPeek, getExpr: () => currentExpr, getState: () => state, openEvaMeet, closeEvaMeet, addAfecto, setAfecto, addEvaInfoBar, setEvaInfoBar, setEditorLive, ejectFromHouse, evaStatus: currentEvaStatus, weekdayName: (d) => weekdayName(d != null ? d : state.day), renderHUD, renderActions, showRoomEva, isEvaHere, isEvaCleaning, currentSceneVariant, isEvaSleeping, refreshRoomVisual, startIntroCine, skipIntroCine, startMission, completeMission, maybeTriggerEvent, renderHotspots, eventDoorTargets, pickElogiarTier, playAccionOption, findAccionOption, applyStatDelta, buildEvaMeetMenu, playEventSequence, stopEventSequence, snapshot, applySnapshot, markEventDone, eventPending, eventWasPlayed };
 
   let bootStarted = false;
   function bootWhenReady() {

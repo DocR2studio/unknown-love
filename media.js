@@ -96,14 +96,19 @@ const MediaStore = (() => {
     return url;
   }
 
+  function shippedPath(id, kind) {
+    if (typeof SHIPPED_MEDIA === "undefined" || !SHIPPED_MEDIA) return null;
+    const rec = SHIPPED_MEDIA[id];
+    return (rec && rec[kind]) || null;
+  }
   async function mediaFor(id) {
     const image = await getRecord(id, "image");
     const video = await getRecord(id, "video");
     return {
       image: image || null,
       video: video || null,
-      imageURL: image ? await objectURL(id, "image") : null,
-      videoURL: video ? await objectURL(id, "video") : null
+      imageURL: image ? await objectURL(id, "image") : shippedPath(id, "image"),
+      videoURL: video ? await objectURL(id, "video") : shippedPath(id, "video")
     };
   }
 
