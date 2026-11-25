@@ -1804,10 +1804,12 @@
   function eventPending(ev) {
     if (!ev || !ev.id || !ev.location) return false;
     if ((state.eventsDone || []).indexOf(ev.id) !== -1) return false;
+    if (ev.enabled === false) return false;
     if (ev.moment && ev.moment !== state.moment) return false;
     if (ev.minDay && (state.day || 0) < ev.minDay) return false;
+    if (ev.after && (state.eventsDone || []).indexOf(ev.after) === -1) return false;
     if (ev.mission) return ensureMissions().active.indexOf(ev.mission) !== -1;
-    return ev.enabled !== false;
+    return true;
   }
   /* Puertas (destinos) que acercan a un evento pendiente: camino más corto por DOORS. */
   function eventDoorTargets(locId) {
@@ -1911,7 +1913,11 @@
         el.className = "event-shot";
         const img = el.querySelector(".event-img");
         const blur = el.querySelector(".event-blur");
-        if (img) img.removeAttribute("src");
+        if (img) {
+          img.onload = null;
+          img.onerror = null;
+          img.removeAttribute("src");
+        }
         if (blur) blur.style.backgroundImage = "";
       });
     }
@@ -1935,36 +1941,69 @@
       startTalk(conv);
     });
   }
-  function eventShow(shot) {
+  async function resolveEventShotUrl(ev, shot) {
+    if (!shot) return "";
+    const evId = ev && ev.id;
+    const key = shot.mediaKey || (evId && shot.id && typeof eventShotMediaKey === "function"
+      ? eventShotMediaKey(evId, shot.id)
+      : "");
+    if (key && typeof MediaStore !== "undefined") {
+      try {
+        const m = await MediaStore.mediaFor(key);
+        if (m && m.imageURL) return m.imageURL;
+      } catch (e) { /* ignore */ }
+    }
+    if (shot.image) return assetUrl(shot.image);
+    return "";
+  }
+  function eventShow(shot, ev) {
     const a = $("event-shot-a");
     const b = $("event-shot-b");
-    if (!a || !b || !shot || !shot.image) return Promise.resolve();
+    if (!a || !b || !shot) return Promise.resolve();
     const next = eventFront === "a" ? b : a;
     const prev = eventFront === "a" ? a : b;
     const img = next.querySelector(".event-img");
     const blur = next.querySelector(".event-blur");
-    const url = assetUrl(shot.image);
-    return new Promise((resolve) => {
+    const reveal = (url) => {
+      next.className = "event-shot fx-" + (shot.fx || "kb-in") + (url ? "" : " is-empty");
+      next.style.setProperty("--event-dur", "18000ms");
+      if (blur) blur.style.backgroundImage = url ? ("url(\"" + url + "\")") : "";
+      void next.offsetWidth;
+      next.classList.add("is-on");
+      prev.classList.remove("is-on");
+      prev.classList.add("is-out");
+      eventFront = eventFront === "a" ? "b" : "a";
+    };
+    return resolveEventShotUrl(ev, shot).then((url) => new Promise((resolve) => {
       let fired = false;
-      const go = () => {
+      const go = (okUrl) => {
         if (fired) return;
         fired = true;
-        next.className = "event-shot fx-" + (shot.fx || "kb-in");
-        next.style.setProperty("--event-dur", "18000ms");
-        if (blur) blur.style.backgroundImage = "url(\"" + url + "\")";
-        void next.offsetWidth;
-        next.classList.add("is-on");
-        prev.classList.remove("is-on");
-        prev.classList.add("is-out");
-        eventFront = eventFront === "a" ? "b" : "a";
+        reveal(okUrl);
         resolve();
       };
-      img.onload = go;
-      img.onerror = go;
+      if (!url) {
+        if (img) {
+          img.onload = null;
+          img.onerror = null;
+          img.removeAttribute("src");
+          img.alt = "";
+        }
+        go("");
+        return;
+      }
+      img.onload = () => go(url);
+      img.onerror = () => {
+        img.onload = null;
+        img.onerror = null;
+        img.removeAttribute("src");
+        if (blur) blur.style.backgroundImage = "";
+        go("");
+      };
       img.alt = "";
       img.src = url;
-      if (img.complete && img.naturalWidth) go();
-    });
+      if (img.complete && img.naturalWidth) go(url);
+    }));
   }
   function shotTalkConv(shot) {
     const lines = (shot && shot.lines) || [];
@@ -2011,7 +2050,7 @@
     for (let i = 0; i < ev.shots.length; i++) {
       if (run !== eventRun) return;
       const shot = ev.shots[i];
-      await eventShow(shot);
+      await eventShow(shot, ev);
       await eventSleep(i === 0 ? 500 : 700);
       if (run !== eventRun) return;
       await waitTalk(shotTalkConv(shot));
@@ -2032,8 +2071,8 @@
     await eventSleep(700);
     if (run !== eventRun) return;
     stopEventSequence();
-    const dest = ev.exitTo || "sala";
-    if (typeof locById === "function" && locById(dest)) enterHouse(dest);
+    const dest = ev.exitTo || state.location;
+    if (ev.exitTo && typeof locById === "function" && locById(ev.exitTo)) enterHouse(ev.exitTo);
     else enterHouse(state.location);
     if (fade) {
       fade.offsetWidth;
@@ -3641,9 +3680,29 @@
     showScreen("pin");
     setTimeout(() => $("input-pin").focus(), 300);
   }
-  function tryPin() {
-    const v = $("input-pin").value.trim();
-    if (v === EDITOR_PIN) {
+  function hexDigest(buf) {
+    return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  function pinSame(a, b) {
+    a = String(a || "");
+    b = String(b || "");
+    if (a.length !== b.length) return false;
+    let x = 0;
+    for (let i = 0; i < a.length; i++) x |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    return x === 0;
+  }
+  function pinDigest(v) {
+    if (!v || typeof crypto === "undefined" || !crypto.subtle) return Promise.resolve("");
+    const salt = (typeof EDITOR_PIN_SALT === "string") ? EDITOR_PIN_SALT : "";
+    return crypto.subtle.digest("SHA-256", new TextEncoder().encode(salt + v)).then(hexDigest);
+  }
+  async function tryPin() {
+    const input = $("input-pin");
+    const v = input ? input.value.trim() : "";
+    if (input) input.value = "";
+    const h = await pinDigest(v);
+    const expect = (typeof EDITOR_PIN_HASH === "string") ? EDITOR_PIN_HASH : "";
+    if (expect && pinSame(h, expect)) {
       $("pin-error").hidden = true;
       setEditorLive(true);
       openEditor();
@@ -3848,12 +3907,366 @@
     });
     return card;
   }
+
+  function eventMediaKey(ev, shot) {
+    if (shot && shot.mediaKey) return shot.mediaKey;
+    if (typeof eventShotMediaKey === "function" && ev && ev.id && shot && shot.id) {
+      return eventShotMediaKey(ev.id, shot.id);
+    }
+    return ev && shot ? ("evento:" + ev.id + ":" + shot.id) : "";
+  }
+  function nextStepId(ev) {
+    let max = 0;
+    (ev.shots || []).forEach((s) => {
+      const m = s && String(s.id || "").match(/^paso-(\d+)$/);
+      if (m) max = Math.max(max, Number(m[1]));
+    });
+    return "paso-" + (max + 1);
+  }
+  function nextLineId(shot) {
+    let max = 0;
+    (shot.lines || []).forEach((ln) => {
+      const m = ln && String(ln.id || "").match(/^linea-(\d+)$/);
+      if (m) max = Math.max(max, Number(m[1]));
+    });
+    return "linea-" + (max + 1);
+  }
+  async function renderEventsEditorCard() {
+    if (typeof ensureEditorEvents === "function") ensureEditorEvents();
+    const card = document.createElement("article");
+    card.className = "editor-card editor-events-card";
+    const h = document.createElement("h3");
+    h.textContent = "Eventos";
+    card.appendChild(h);
+    const note = document.createElement("p");
+    note.className = "editor-note";
+    note.textContent = "Se disparan al entrar a un lugar, según la condición que elijas. Cada paso tiene su foto y su texto. Si no hay foto, el juego muestra un recuadro vacío.";
+    card.appendChild(note);
+
+    const locs = (typeof HOUSE !== "undefined" && Array.isArray(HOUSE.locations)) ? HOUSE.locations : [];
+    const times = (typeof TIMES !== "undefined" && Array.isArray(TIMES)) ? TIMES : ["mañana", "tarde", "noche", "madrugada"];
+    const missions = (typeof MISSIONS !== "undefined" && Array.isArray(MISSIONS)) ? MISSIONS : [];
+    const exprs = (typeof EXPRESSIONS !== "undefined" && Array.isArray(EXPRESSIONS)) ? EXPRESSIONS : ["neutral", "feliz", "triste", "molesta", "sonrojada", "nerviosa"];
+    const exprLabel = (id) => (typeof EXPR_LABELS !== "undefined" && EXPR_LABELS[id]) || id;
+    const whoOptions = [
+      { id: "Eva", label: "Eva" },
+      { id: "prota", label: (typeof protaInfo === "function" && protaInfo().name) || "???" },
+      { id: "", label: "Narración" }
+    ];
+
+    const sel = (value, opts, onChange) => {
+      const el = document.createElement("select");
+      opts.forEach((o) => {
+        const op = document.createElement("option");
+        op.value = o.id;
+        op.textContent = o.label;
+        if (String(o.id) === String(value == null ? "" : value)) op.selected = true;
+        el.appendChild(op);
+      });
+      el.addEventListener("change", () => onChange(el.value));
+      return el;
+    };
+    const row = (label, node) => {
+      const r = document.createElement("div");
+      r.className = "seq-row";
+      const lab = document.createElement("label");
+      lab.textContent = label;
+      r.appendChild(lab);
+      r.appendChild(node);
+      return r;
+    };
+    const tiny = (label, onClick) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "btn btn-ghost btn-tiny";
+      b.textContent = label;
+      b.addEventListener("click", onClick);
+      return b;
+    };
+
+    const events = storyEvents();
+    for (let ei = 0; ei < events.length; ei++) {
+      const ev = events[ei];
+      if (!ev) continue;
+      const block = document.createElement("div");
+      block.className = "event-block";
+      const head = document.createElement("h4");
+      head.textContent = ev.title || ("Evento " + (ei + 1));
+      block.appendChild(head);
+
+      const titleInp = document.createElement("input");
+      titleInp.type = "text";
+      titleInp.value = ev.title || "";
+      titleInp.addEventListener("change", () => {
+        ev.title = titleInp.value.trim() || ev.title;
+        titleInp.value = ev.title;
+        head.textContent = ev.title;
+        saveStoryPatch();
+      });
+      const titleRow = row("Título", titleInp);
+      titleRow.appendChild(makePencil(() => {
+        openEditModal("Título", titleInp.value, (v) => {
+          ev.title = v;
+          titleInp.value = v;
+          head.textContent = v;
+          saveStoryPatch();
+        });
+      }, "Editar título"));
+      block.appendChild(titleRow);
+
+      block.appendChild(row("Lugar", sel(ev.location || "cocina", locs.map((l) => ({ id: l.id, label: l.name || l.id })), (v) => {
+        ev.location = v || "cocina";
+        saveStoryPatch();
+      })));
+
+      const momentOpts = [{ id: "", label: "Cualquier momento" }].concat(times.map((tm) => ({ id: tm, label: tm.charAt(0).toUpperCase() + tm.slice(1) })));
+      block.appendChild(row("Momento", sel(ev.moment || "", momentOpts, (v) => {
+        ev.moment = v;
+        saveStoryPatch();
+      })));
+
+      const dayInp = document.createElement("input");
+      dayInp.type = "number";
+      dayInp.min = "0";
+      dayInp.value = ev.minDay != null ? ev.minDay : 0;
+      dayInp.addEventListener("change", () => {
+        ev.minDay = Math.max(0, parseInt(dayInp.value, 10) || 0);
+        dayInp.value = ev.minDay;
+        saveStoryPatch();
+      });
+      block.appendChild(row("Desde el día", dayInp));
+
+      const missionOpts = [{ id: "", label: "Ninguna (al entrar)" }].concat(missions.map((m) => ({ id: m.id, label: (m.title || m.id) })));
+      block.appendChild(row("Misión activa", sel(ev.mission || "", missionOpts, (v) => {
+        ev.mission = v;
+        saveStoryPatch();
+      })));
+
+      const afterOpts = [{ id: "", label: "Ninguno" }].concat(events.filter((x) => x && x.id && x.id !== ev.id).map((x) => ({ id: x.id, label: x.title || x.id })));
+      block.appendChild(row("Después del evento", sel(ev.after || "", afterOpts, (v) => {
+        ev.after = v;
+        saveStoryPatch();
+      })));
+
+      const enLab = document.createElement("label");
+      enLab.className = "event-enabled";
+      const en = document.createElement("input");
+      en.type = "checkbox";
+      en.checked = ev.enabled !== false;
+      en.addEventListener("change", () => {
+        ev.enabled = en.checked;
+        saveStoryPatch();
+      });
+      enLab.appendChild(en);
+      enLab.appendChild(document.createTextNode(" Activado"));
+      block.appendChild(enLab);
+
+      const exitInp = document.createElement("select");
+      [{ id: "", label: "Quedarse en el lugar" }].concat(locs.map((l) => ({ id: l.id, label: l.name || l.id }))).forEach((o) => {
+        const op = document.createElement("option");
+        op.value = o.id;
+        op.textContent = o.label;
+        if (String(o.id) === String(ev.exitTo || "")) op.selected = true;
+        exitInp.appendChild(op);
+      });
+      exitInp.addEventListener("change", () => {
+        ev.exitTo = exitInp.value;
+        saveStoryPatch();
+      });
+      block.appendChild(row("Salir hacia", exitInp));
+
+      if (!Array.isArray(ev.shots)) ev.shots = [];
+      for (let si = 0; si < ev.shots.length; si++) {
+        const shot = ev.shots[si];
+        const step = document.createElement("div");
+        step.className = "event-step";
+        const sh = document.createElement("div");
+        sh.className = "event-step-head";
+        const st = document.createElement("strong");
+        st.textContent = "Paso " + (si + 1);
+        sh.appendChild(st);
+        if (si > 0) {
+          sh.appendChild(tiny("Subir", () => {
+            ev.shots.splice(si - 1, 0, ev.shots.splice(si, 1)[0]);
+            saveStoryPatch();
+            renderEditor();
+          }));
+        }
+        if (si < ev.shots.length - 1) {
+          sh.appendChild(tiny("Bajar", () => {
+            ev.shots.splice(si + 1, 0, ev.shots.splice(si, 1)[0]);
+            saveStoryPatch();
+            renderEditor();
+          }));
+        }
+        sh.appendChild(tiny("Quitar paso", async () => {
+          const key = eventMediaKey(ev, shot);
+          if (key && typeof MediaStore !== "undefined") {
+            try { await MediaStore.remove(key, "image"); } catch (e) { /* ignore */ }
+          }
+          ev.shots.splice(si, 1);
+          saveStoryPatch();
+          await renderEditor();
+        }));
+        step.appendChild(sh);
+
+        const key = eventMediaKey(ev, shot);
+        let media = {};
+        if (key && typeof MediaStore !== "undefined") {
+          try { media = await MediaStore.mediaFor(key); } catch (e) { media = {}; }
+        }
+        const pre = document.createElement("div");
+        pre.className = "editor-previews";
+        const src = (media && media.imageURL) || shot.image || "";
+        if (src) {
+          const img = document.createElement("img");
+          img.className = "prev";
+          img.alt = "";
+          img.src = media && media.imageURL ? media.imageURL : assetUrl(shot.image);
+          img.addEventListener("error", () => {
+            img.remove();
+            const empty = document.createElement("div");
+            empty.className = "editor-slot-empty";
+            empty.textContent = "Agregar foto";
+            pre.appendChild(empty);
+          });
+          pre.appendChild(img);
+        } else {
+          const empty = document.createElement("div");
+          empty.className = "editor-slot-empty";
+          empty.textContent = "Agregar foto";
+          pre.appendChild(empty);
+        }
+        step.appendChild(pre);
+        const actions = document.createElement("div");
+        actions.className = "editor-actions";
+        actions.appendChild(fileButton("Agregar foto", "image/*", async (f) => {
+          if (key) await MediaStore.put(key, "image", f, f.name);
+          await renderEditor();
+        }));
+        if ((media && media.image) || shot.image) {
+          const rm = tiny("Quitar foto", async () => {
+            if (key && media && media.image) await MediaStore.remove(key, "image");
+            if (shot.image) shot.image = "";
+            saveStoryPatch();
+            await renderEditor();
+          });
+          actions.appendChild(rm);
+        }
+        step.appendChild(actions);
+
+        if (!Array.isArray(shot.lines) || !shot.lines.length) {
+          shot.lines = [{ id: "linea-1", who: "Eva", expr: "neutral", text: "Texto del evento" }];
+        }
+        shot.lines.forEach((line, li) => {
+          const lineBox = document.createElement("div");
+          lineBox.className = "event-line";
+          const whoRow = document.createElement("div");
+          whoRow.className = "seq-row";
+          const wlab = document.createElement("label");
+          wlab.textContent = "Quién habla";
+          whoRow.appendChild(wlab);
+          whoRow.appendChild(sel(line.who == null ? "Eva" : line.who, whoOptions, (v) => {
+            line.who = v;
+            saveStoryPatch();
+          }));
+          const elab = document.createElement("label");
+          elab.textContent = "Expresión Eva";
+          whoRow.appendChild(elab);
+          const exprOpts = exprs.map((ex) => ({ id: ex, label: exprLabel(ex) }));
+          whoRow.appendChild(sel(line.expr || "neutral", exprOpts, (v) => {
+            line.expr = v;
+            shot.expr = v;
+            saveStoryPatch();
+          }));
+          lineBox.appendChild(whoRow);
+
+          const textInp = document.createElement("textarea");
+          textInp.value = line.text || "";
+          textInp.addEventListener("change", () => {
+            line.text = textInp.value;
+            saveStoryPatch();
+          });
+          const trow = row("Texto", textInp);
+          trow.appendChild(makePencil(() => {
+            openEditModal("Texto del evento", textInp.value, (v) => {
+              line.text = v;
+              textInp.value = v;
+              saveStoryPatch();
+            });
+          }, "Editar texto"));
+          lineBox.appendChild(trow);
+          if (shot.lines.length > 1) {
+            lineBox.appendChild(tiny("Quitar línea", () => {
+              shot.lines.splice(li, 1);
+              saveStoryPatch();
+              renderEditor();
+            }));
+          }
+          step.appendChild(lineBox);
+        });
+        step.appendChild(tiny("Agregar línea", () => {
+          shot.lines.push({ id: nextLineId(shot), who: "Eva", expr: "neutral", text: "Texto del evento" });
+          saveStoryPatch();
+          renderEditor();
+        }));
+        block.appendChild(step);
+      }
+
+      const stepBtns = document.createElement("div");
+      stepBtns.className = "editor-actions";
+      stepBtns.appendChild(tiny("Agregar paso", () => {
+        const id = nextStepId(ev);
+        ev.shots.push({
+          id: id,
+          image: "",
+          fx: "kb-in",
+          lines: [{ id: "linea-1", who: "Eva", expr: "neutral", text: "Texto del evento" }]
+        });
+        saveStoryPatch();
+        renderEditor();
+      }));
+      if (ev.id !== "desayuno") {
+        stepBtns.appendChild(tiny("Quitar evento", async () => {
+          for (const shot of ev.shots || []) {
+            const key = eventMediaKey(ev, shot);
+            if (key && typeof MediaStore !== "undefined") {
+              try { await MediaStore.remove(key, "image"); } catch (e) { /* ignore */ }
+            }
+          }
+          const idx = STORY_EVENTS.indexOf(ev);
+          if (idx >= 0) STORY_EVENTS.splice(idx, 1);
+          if (typeof ensureEditorEvents === "function") ensureEditorEvents();
+          saveStoryPatch();
+          await renderEditor();
+        }));
+      }
+      block.appendChild(stepBtns);
+      card.appendChild(block);
+    }
+
+    const addEv = document.createElement("button");
+    addEv.type = "button";
+    addEv.className = "btn btn-primary btn-tiny";
+    addEv.textContent = "Agregar evento";
+    addEv.addEventListener("click", () => {
+      const n = typeof nextEditorEventNumber === "function" ? nextEditorEventNumber() : (storyEvents().length + 1);
+      const ev = typeof makeStoryEvent === "function" ? makeStoryEvent(n, "cocina") : null;
+      if (ev) STORY_EVENTS.push(ev);
+      saveStoryPatch();
+      renderEditor();
+    });
+    card.appendChild(addEv);
+    return card;
+  }
+
   async function renderEditor() {
     const list = $("editor-list");
     list.innerHTML = "";
     list.appendChild(renderBarsEditorCard());
     list.appendChild(renderAvisoCard());
     list.appendChild(renderIntroCineCard());
+    list.appendChild(await renderEventsEditorCard());
     list.appendChild(renderPacienciaRecoverCard());
     list.appendChild(renderEvaScheduleCard());
     list.appendChild(renderRoomActionsCard());
