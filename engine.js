@@ -358,10 +358,55 @@
   /* ---------- Media / backgrounds ---------- */
   function clearVideo() {
     const video = $("bg-video");
-    video.pause();
+    if (!video) return;
+    try { video.pause(); } catch (e) { /* ignore */ }
     video.removeAttribute("src");
     video.classList.remove("has-src");
-    video.load();
+    try { video.load(); } catch (e) { /* ignore */ }
+  }
+  function armMediaVideo(video, url) {
+    if (!video) return Promise.resolve(false);
+    video.muted = true;
+    video.defaultMuted = true;
+    video.loop = true;
+    video.playsInline = true;
+    video.setAttribute("playsinline", "");
+    video.setAttribute("webkit-playsinline", "");
+    video.setAttribute("muted", "");
+    video.controls = false;
+    video.disablePictureInPicture = true;
+    video.preload = "auto";
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (ok) => { if (done) return; done = true; resolve(!!ok); };
+      video.onloadeddata = () => {
+        const p = video.play();
+        if (p && typeof p.then === "function") {
+          p.then(() => finish(true)).catch(() => {
+            try { video.pause(); if (video.readyState >= 1) video.currentTime = 0; } catch (e) { /* ignore */ }
+            finish(true);
+          });
+        } else finish(true);
+      };
+      video.onerror = () => finish(false);
+      video.src = url;
+      try { video.load(); } catch (e) { /* ignore */ }
+    });
+  }
+  function releaseMediaVideo(video) {
+    if (!video) return;
+    try { video.pause(); } catch (e) { /* ignore */ }
+    video.onloadeddata = null;
+    video.onerror = null;
+    video.removeAttribute("src");
+    try { video.load(); } catch (e) { /* ignore */ }
+  }
+  async function playBgVideo(url) {
+    const video = $("bg-video");
+    if (!video || !url) return false;
+    setImg("");
+    video.classList.add("has-src");
+    return armMediaVideo(video, url);
   }
   function setImg(src) {
     const img = $("bg-img");
@@ -418,6 +463,10 @@
     const variant = currentSceneVariant();
     if (variant) {
       const customScene = await MediaStore.mediaFor(sceneMediaKey(variant.id));
+      if (customScene.videoURL) {
+        await playBgVideo(/^(blob:|data:)/i.test(customScene.videoURL) ? customScene.videoURL : assetUrl(customScene.videoURL));
+        return;
+      }
       if (customScene.imageURL) {
         setImg(customScene.imageURL);
         return;
@@ -427,11 +476,7 @@
     }
     const custom = await MediaStore.mediaFor(locId);
     if (custom.videoURL) {
-      setImg("");
-      const video = $("bg-video");
-      video.src = custom.videoURL;
-      video.classList.add("has-src");
-      video.play().catch(() => {});
+      await playBgVideo(/^(blob:|data:)/i.test(custom.videoURL) ? custom.videoURL : assetUrl(custom.videoURL));
       return;
     }
     setImg(custom.imageURL || fallbackImage || "");
@@ -1926,12 +1971,14 @@
         el.className = "event-shot";
         const img = el.querySelector(".event-img");
         const blur = el.querySelector(".event-blur");
+        const vid = el.querySelector(".event-vid");
         if (img) {
           img.onload = null;
           img.onerror = null;
           img.removeAttribute("src");
         }
         if (blur) blur.style.backgroundImage = "";
+        releaseMediaVideo(vid);
       });
     }
     const game = $("screen-game");
@@ -1954,71 +2001,127 @@
       startTalk(conv);
     });
   }
-  async function resolveEventShotUrl(ev, shot) {
-    if (!shot) return "";
+  function mediaAbsUrl(url) {
+    if (!url) return "";
+    return /^(blob:|data:)/i.test(url) ? url : assetUrl(url);
+  }
+  async function resolveEventShotMedia(ev, shot) {
+    const empty = { image: "", video: "" };
+    if (!shot) return empty;
     const evId = ev && ev.id;
     const key = shot.mediaKey || (evId && shot.id && typeof eventShotMediaKey === "function"
       ? eventShotMediaKey(evId, shot.id)
       : "");
+    const out = { image: "", video: "" };
     if (key && typeof MediaStore !== "undefined") {
       try {
         const m = await MediaStore.mediaFor(key);
-        if (m && m.imageURL) return (/^(blob:|data:)/i.test(m.imageURL) ? m.imageURL : assetUrl(m.imageURL));
+        if (m && m.videoURL) out.video = mediaAbsUrl(m.videoURL);
+        if (m && m.imageURL) out.image = mediaAbsUrl(m.imageURL);
       } catch (e) { /* ignore */ }
     }
-    if (key && typeof SHIPPED_MEDIA !== "undefined" && SHIPPED_MEDIA[key] && SHIPPED_MEDIA[key].image) {
-      return assetUrl(SHIPPED_MEDIA[key].image);
+    if (!out.video && key && typeof SHIPPED_MEDIA !== "undefined" && SHIPPED_MEDIA[key] && SHIPPED_MEDIA[key].video) {
+      out.video = assetUrl(SHIPPED_MEDIA[key].video);
     }
-    if (shot.image) return assetUrl(shot.image);
-    return "";
+    if (!out.image && key && typeof SHIPPED_MEDIA !== "undefined" && SHIPPED_MEDIA[key] && SHIPPED_MEDIA[key].image) {
+      out.image = assetUrl(SHIPPED_MEDIA[key].image);
+    }
+    if (!out.video && shot.video) out.video = assetUrl(shot.video);
+    if (!out.image && shot.image) out.image = assetUrl(shot.image);
+    return out;
+  }
+  function waitScreenTap(run) {
+    return new Promise((resolve) => {
+      if (run != null && run !== eventRun) { resolve(); return; }
+      const stage = $("event-stage") || $("screen-game") || document;
+      const done = () => {
+        stage.removeEventListener("pointerup", onPtr, true);
+        document.removeEventListener("keydown", onKey, true);
+        resolve();
+      };
+      const onPtr = (e) => {
+        if (e && e.target && e.target.closest && e.target.closest("button, .choices, .ed-pencil, a, input, textarea, select")) return;
+        if (run != null && run !== eventRun) { done(); return; }
+        done();
+      };
+      const onKey = (e) => {
+        if (e.key !== "Enter" && e.key !== " " && e.key !== "ArrowRight") return;
+        e.preventDefault();
+        onPtr(e);
+      };
+      stage.addEventListener("pointerup", onPtr, true);
+      document.addEventListener("keydown", onKey, true);
+    });
   }
   function eventShow(shot, ev) {
     const a = $("event-shot-a");
     const b = $("event-shot-b");
-    if (!a || !b || !shot) return Promise.resolve();
+    if (!a || !b || !shot) return Promise.resolve({ video: false });
     const next = eventFront === "a" ? b : a;
     const prev = eventFront === "a" ? a : b;
     const img = next.querySelector(".event-img");
     const blur = next.querySelector(".event-blur");
-    const reveal = (url) => {
-      next.className = "event-shot fx-" + (shot.fx || "kb-in") + (url ? "" : " is-empty");
+    const vid = next.querySelector(".event-vid");
+    releaseMediaVideo(prev.querySelector(".event-vid"));
+    const reveal = (media) => {
+      const hasVid = !!(media && media.video);
+      const hasImg = !!(media && media.image);
+      next.className = "event-shot fx-" + (shot.fx || "kb-in") + (hasVid || hasImg ? "" : " is-empty") + (hasVid ? " has-video" : "");
       next.style.setProperty("--event-dur", "18000ms");
-      if (blur) blur.style.backgroundImage = url ? ("url(\"" + url + "\")") : "";
+      if (blur) blur.style.backgroundImage = (!hasVid && hasImg) ? ("url(\"" + media.image + "\")") : "";
       void next.offsetWidth;
       next.classList.add("is-on");
       prev.classList.remove("is-on");
       prev.classList.add("is-out");
       eventFront = eventFront === "a" ? "b" : "a";
     };
-    return resolveEventShotUrl(ev, shot).then((url) => new Promise((resolve) => {
-      let fired = false;
-      const go = (okUrl) => {
-        if (fired) return;
-        fired = true;
-        reveal(okUrl);
-        resolve();
+    return resolveEventShotMedia(ev, shot).then((media) => new Promise((resolve) => {
+      const finish = (okMedia) => {
+        reveal(okMedia);
+        resolve({ video: !!(okMedia && okMedia.video) });
       };
-      if (!url) {
+      if (media.video) {
+        if (img) {
+          img.onload = null;
+          img.onerror = null;
+          img.removeAttribute("src");
+        }
+        next.classList.add("has-video");
+        armMediaVideo(vid, media.video).then((ok) => {
+          if (!ok) media.video = "";
+          finish(media);
+        });
+        return;
+      }
+      if (!media.image) {
         if (img) {
           img.onload = null;
           img.onerror = null;
           img.removeAttribute("src");
           img.alt = "";
         }
-        go("");
+        releaseMediaVideo(vid);
+        finish(media);
         return;
       }
-      img.onload = () => go(url);
+      releaseMediaVideo(vid);
+      let fired = false;
+      const go = (ok) => {
+        if (fired) return;
+        fired = true;
+        if (!ok) media.image = "";
+        finish(media);
+      };
+      img.onload = () => go(true);
       img.onerror = () => {
         img.onload = null;
         img.onerror = null;
         img.removeAttribute("src");
-        if (blur) blur.style.backgroundImage = "";
-        go("");
+        go(false);
       };
       img.alt = "";
-      img.src = url;
-      if (img.complete && img.naturalWidth) go(url);
+      img.src = media.image;
+      if (img.complete && img.naturalWidth) go(true);
     }));
   }
   function shotTalkConv(shot) {
@@ -2067,10 +2170,20 @@
     for (let i = 0; i < ev.shots.length; i++) {
       if (run !== eventRun) return;
       const shot = ev.shots[i];
-      await eventShow(shot, ev);
+      const shown = await eventShow(shot, ev);
       await eventSleep(i === 0 ? 500 : 700);
       if (run !== eventRun) return;
-      await waitTalk(shotTalkConv(shot));
+      const conv = shotTalkConv(shot);
+      const hasTalk = (function () {
+        if (Array.isArray(conv) && conv.length) return true;
+        if (conv && conv.nodes) {
+          const first = conv.nodes[conv.start || "ask"] || conv.nodes.main;
+          return !!(first && ((first.lines && first.lines.length) || (first.choices && first.choices.length)));
+        }
+        return false;
+      })();
+      if (hasTalk) await waitTalk(conv);
+      else if (shown && shown.video) await waitScreenTap(run);
       if (run !== eventRun) return;
     }
     if (Array.isArray(ev.close) && ev.close.length) {
@@ -3624,22 +3737,31 @@
       if (meet) meet.classList.remove("has-scene");
       if ($("btn-agregar-foto")) $("btn-agregar-foto").hidden = true;
       if ($("eva-scene-bg")) $("eva-scene-bg").style.backgroundImage = "";
+      releaseMediaVideo($("eva-scene-video"));
+      if (slot) slot.classList.remove("has-video");
       return;
     }
-    let media = { imageURL: null };
+    let media = { imageURL: null, videoURL: null };
     try { media = await MediaStore.mediaFor(sceneId); } catch (e) { /* ignore */ }
-    const has = !!(media && media.imageURL);
+    const vid = $("eva-scene-video");
+    const hasVid = !!(media && media.videoURL);
+    const hasImg = !!(media && media.imageURL);
+    const has = hasVid || hasImg;
     const showEmpty = !!(opts && opts.showEmpty);
     if (!has && !editorLive && !showEmpty) {
       slot.hidden = true;
       if (meet) meet.classList.remove("has-scene");
       if ($("btn-agregar-foto")) $("btn-agregar-foto").hidden = true;
+      releaseMediaVideo(vid);
       return;
     }
     slot.hidden = false;
     slot.classList.toggle("is-empty", !has);
+    slot.classList.toggle("has-video", hasVid);
     if (meet) meet.classList.add("has-scene");
-    if ($("eva-scene-bg")) $("eva-scene-bg").style.backgroundImage = has ? "url('" + media.imageURL + "')" : "";
+    if ($("eva-scene-bg")) $("eva-scene-bg").style.backgroundImage = (!hasVid && hasImg) ? ("url('" + media.imageURL + "')") : "";
+    if (hasVid) await armMediaVideo(vid, mediaAbsUrl(media.videoURL));
+    else releaseMediaVideo(vid);
     if ($("btn-agregar-foto")) $("btn-agregar-foto").hidden = !editorLive;
   }
   function ejectFromHouse() {
@@ -3729,6 +3851,50 @@
     showScreen("editor");
     await renderEditor();
   }
+  const MEDIA_ACCEPT = "image/*,video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov";
+  const MEDIA_WARN_BYTES = 15 * 1024 * 1024;
+  function isVideoFile(f) {
+    const typ = ((f && f.type) || "").toLowerCase();
+    const name = ((f && f.name) || "").toLowerCase();
+    if (typ.indexOf("video/") === 0) return true;
+    return /\.(mp4|webm|mov|m4v|ogv)$/.test(name);
+  }
+  function warnLargeMedia(f) {
+    if (f && f.size > MEDIA_WARN_BYTES) {
+      const mb = (f.size / (1024 * 1024)).toFixed(1).replace(/\.0$/, "");
+      toast("Este archivo pesa " + mb + " MB. En GitHub Pages conviene no pasar de unos 15 MB.");
+    }
+  }
+  function shippedVideoList() {
+    if (typeof SHIPPED_VIDEOS !== "undefined" && Array.isArray(SHIPPED_VIDEOS)) return SHIPPED_VIDEOS.slice();
+    return ["assets/videos/video-01.mp4"];
+  }
+  function setMediaPick(id, kind, path) {
+    if (typeof MEDIA_PICKS === "undefined") return;
+    if (!MEDIA_PICKS[id]) MEDIA_PICKS[id] = {};
+    if (path) MEDIA_PICKS[id][kind] = path;
+    else delete MEDIA_PICKS[id][kind];
+    if (MEDIA_PICKS[id] && !MEDIA_PICKS[id].image && !MEDIA_PICKS[id].video) delete MEDIA_PICKS[id];
+    saveStoryPatch();
+  }
+  async function putSlotMedia(id, f) {
+    if (!id || !f) return;
+    warnLargeMedia(f);
+    if (isVideoFile(f)) {
+      setMediaPick(id, "video", "");
+      await MediaStore.put(id, "video", f, f.name);
+    } else {
+      setMediaPick(id, "image", "");
+      await MediaStore.put(id, "image", f, f.name);
+    }
+  }
+  async function clearSlotMedia(id) {
+    if (!id) return;
+    try { await MediaStore.remove(id, "image"); } catch (e) { /* ignore */ }
+    try { await MediaStore.remove(id, "video"); } catch (e) { /* ignore */ }
+    setMediaPick(id, "image", "");
+    setMediaPick(id, "video", "");
+  }
   function fileButton(label, accept, onFile) {
     const lab = document.createElement("label");
     lab.className = "file-btn";
@@ -3738,11 +3904,80 @@
     inp.accept = accept;
     inp.addEventListener("change", async () => {
       const f = inp.files && inp.files[0];
+      inp.value = "";
       if (!f) return;
       await onFile(f);
     });
     lab.appendChild(inp);
     return lab;
+  }
+  function fillPreview(pre, media, fallbackImage) {
+    pre.innerHTML = "";
+    const videoURL = media && media.videoURL;
+    const imageURL = (media && media.imageURL) || fallbackImage || "";
+    if (videoURL) {
+      const vid = document.createElement("video");
+      vid.className = "prev";
+      vid.muted = true;
+      vid.loop = true;
+      vid.playsInline = true;
+      vid.setAttribute("playsinline", "");
+      vid.controls = false;
+      vid.src = mediaAbsUrl(videoURL);
+      vid.play().catch(() => {});
+      pre.appendChild(vid);
+      return true;
+    }
+    if (imageURL) {
+      const img = document.createElement("img");
+      img.className = "prev";
+      img.alt = "";
+      img.src = mediaAbsUrl(imageURL);
+      img.addEventListener("error", () => {
+        img.remove();
+        if (!pre.childElementCount) {
+          const empty = document.createElement("div");
+          empty.className = "editor-slot-empty";
+          empty.textContent = "Agregar foto";
+          pre.appendChild(empty);
+        }
+      });
+      pre.appendChild(img);
+      return true;
+    }
+    const empty = document.createElement("div");
+    empty.className = "editor-slot-empty";
+    empty.textContent = "Agregar foto";
+    pre.appendChild(empty);
+    return false;
+  }
+  function shippedVideoPicker(id, onDone) {
+    const wrap = document.createElement("label");
+    wrap.className = "shipped-video-pick";
+    const sel = document.createElement("select");
+    const zero = document.createElement("option");
+    zero.value = "";
+    zero.textContent = "Elegir video incluido…";
+    sel.appendChild(zero);
+    shippedVideoList().forEach((path) => {
+      const op = document.createElement("option");
+      op.value = path;
+      op.textContent = path.split("/").pop();
+      sel.appendChild(op);
+    });
+    sel.addEventListener("change", async () => {
+      const path = sel.value;
+      sel.value = "";
+      if (!path || !id) return;
+      try { await MediaStore.remove(id, "video"); } catch (e) { /* ignore */ }
+      setMediaPick(id, "video", path);
+      if (typeof onDone === "function") await onDone();
+    });
+    wrap.appendChild(sel);
+    return wrap;
+  }
+  function hasSlotMedia(media, fallbackImage) {
+    return !!(media && (media.image || media.video || media.imageURL || media.videoURL) || fallbackImage);
   }
   async function renderExprSlot(item) {
     const media = await MediaStore.mediaFor(item.id);
@@ -3785,45 +4020,22 @@
     card.appendChild(h);
     const pre = document.createElement("div");
     pre.className = "editor-previews";
-    const img = document.createElement("img");
-    img.className = "prev" + (item.kind === "sprite" || item.kind === "expression" ? " prev-sprite" : "");
-    img.alt = "";
-    if (media.imageURL || item.defaultImage) {
-      img.src = media.imageURL || item.defaultImage;
-      pre.appendChild(img);
-    } else {
-      const empty = document.createElement("div");
-      empty.className = "editor-slot-empty";
-      empty.textContent = "Agregar foto";
-      pre.appendChild(empty);
-    }
-    if (media.videoURL) {
-      const vid = document.createElement("video");
-      vid.className = "prev";
-      vid.src = media.videoURL;
-      vid.muted = true;
-      vid.playsInline = true;
-      pre.appendChild(vid);
-    }
+    fillPreview(pre, media, item.defaultImage || "");
     card.appendChild(pre);
     const actions = document.createElement("div");
     actions.className = "editor-actions";
-    actions.appendChild(fileButton(item.kind === "scene" || !item.defaultImage ? "Agregar foto" : "Agregar imagen", "image/*", async (f) => {
-      await MediaStore.put(item.id, "image", f, f.name);
+    actions.appendChild(fileButton("Agregar foto", MEDIA_ACCEPT, async (f) => {
+      await putSlotMedia(item.id, f);
       await renderEditor();
     }));
-    if (item.kind !== "scene") actions.appendChild(fileButton("Agregar video", "video/*", async (f) => {
-      await MediaStore.put(item.id, "video", f, f.name);
-      await renderEditor();
-    }));
-    if (media.image || media.video) {
+    actions.appendChild(shippedVideoPicker(item.id, () => renderEditor()));
+    if (hasSlotMedia(media, item.defaultImage) && (media.image || media.video || media.videoURL)) {
       const rm = document.createElement("button");
       rm.type = "button";
       rm.className = "btn btn-ghost btn-tiny";
       rm.textContent = "Quitar";
       rm.addEventListener("click", async () => {
-        if (media.image) await MediaStore.remove(item.id, "image");
-        if (media.video) await MediaStore.remove(item.id, "video");
+        await clearSlotMedia(item.id);
         await renderEditor();
       });
       actions.appendChild(rm);
@@ -3849,19 +4061,7 @@
       row.className = "scene-variant-row";
       const pre = document.createElement("div");
       pre.className = "editor-previews";
-      const src = media.imageURL || (v.image ? assetUrl(v.image) : "");
-      if (src) {
-        const img = document.createElement("img");
-        img.className = "prev";
-        img.alt = v.label || v.id;
-        img.src = src;
-        pre.appendChild(img);
-      } else {
-        const empty = document.createElement("div");
-        empty.className = "editor-slot-empty";
-        empty.textContent = "Agregar foto";
-        pre.appendChild(empty);
-      }
+      fillPreview(pre, media, v.image ? assetUrl(v.image) : "");
       row.appendChild(pre);
       const side = document.createElement("div");
       side.className = "scene-variant-meta";
@@ -3871,17 +4071,19 @@
       side.appendChild(lab);
       const actions = document.createElement("div");
       actions.className = "editor-actions";
-      actions.appendChild(fileButton("Agregar foto", "image/*", async (f) => {
-        await MediaStore.put(sceneMediaKey(v.id), "image", f, f.name);
+      const sid = sceneMediaKey(v.id);
+      actions.appendChild(fileButton("Agregar foto", MEDIA_ACCEPT, async (f) => {
+        await putSlotMedia(sid, f);
         await renderEditor();
       }));
-      if (media.image) {
+      actions.appendChild(shippedVideoPicker(sid, () => renderEditor()));
+      if (media.image || media.video || media.videoURL) {
         const rm = document.createElement("button");
         rm.type = "button";
         rm.className = "btn btn-ghost btn-tiny";
         rm.textContent = "Quitar";
         rm.addEventListener("click", async () => {
-          await MediaStore.remove(sceneMediaKey(v.id), "image");
+          await clearSlotMedia(sid);
           await renderEditor();
         });
         actions.appendChild(rm);
@@ -4128,9 +4330,7 @@
         }
         sh.appendChild(tiny("Quitar paso", async () => {
           const key = eventMediaKey(ev, shot);
-          if (key && typeof MediaStore !== "undefined") {
-            try { await MediaStore.remove(key, "image"); } catch (e) { /* ignore */ }
-          }
+          if (key) await clearSlotMedia(key);
           ev.shots.splice(si, 1);
           saveStoryPatch();
           await renderEditor();
@@ -4144,37 +4344,20 @@
         }
         const pre = document.createElement("div");
         pre.className = "editor-previews";
-        const src = (media && media.imageURL) || shot.image || "";
-        if (src) {
-          const img = document.createElement("img");
-          img.className = "prev";
-          img.alt = "";
-          img.src = media && media.imageURL ? media.imageURL : assetUrl(shot.image);
-          img.addEventListener("error", () => {
-            img.remove();
-            const empty = document.createElement("div");
-            empty.className = "editor-slot-empty";
-            empty.textContent = "Agregar foto";
-            pre.appendChild(empty);
-          });
-          pre.appendChild(img);
-        } else {
-          const empty = document.createElement("div");
-          empty.className = "editor-slot-empty";
-          empty.textContent = "Agregar foto";
-          pre.appendChild(empty);
-        }
+        fillPreview(pre, media, shot.image ? assetUrl(shot.image) : "");
         step.appendChild(pre);
         const actions = document.createElement("div");
         actions.className = "editor-actions";
-        actions.appendChild(fileButton("Agregar foto", "image/*", async (f) => {
-          if (key) await MediaStore.put(key, "image", f, f.name);
+        actions.appendChild(fileButton("Agregar foto", MEDIA_ACCEPT, async (f) => {
+          if (key) await putSlotMedia(key, f);
           await renderEditor();
         }));
-        if ((media && media.image) || shot.image) {
-          const rm = tiny("Quitar foto", async () => {
-            if (key && media && media.image) await MediaStore.remove(key, "image");
+        if (key) actions.appendChild(shippedVideoPicker(key, () => renderEditor()));
+        if ((media && (media.image || media.video || media.videoURL)) || shot.image || shot.video) {
+          const rm = tiny("Quitar", async () => {
+            if (key) await clearSlotMedia(key);
             if (shot.image) shot.image = "";
+            if (shot.video) shot.video = "";
             saveStoryPatch();
             await renderEditor();
           });
@@ -4257,9 +4440,7 @@
         stepBtns.appendChild(tiny("Quitar evento", async () => {
           for (const shot of ev.shots || []) {
             const key = eventMediaKey(ev, shot);
-            if (key && typeof MediaStore !== "undefined") {
-              try { await MediaStore.remove(key, "image"); } catch (e) { /* ignore */ }
-            }
+            if (key) await clearSlotMedia(key);
           }
           const idx = STORY_EVENTS.indexOf(ev);
           if (idx >= 0) STORY_EVENTS.splice(idx, 1);
@@ -5142,7 +5323,7 @@
       const f = e.target.files && e.target.files[0];
       e.target.value = "";
       if (!f || !meetSceneId) return;
-      await MediaStore.put(meetSceneId, "image", f, f.name);
+      await putSlotMedia(meetSceneId, f);
       await showMeetScene(meetSceneId);
     });
 

@@ -4,3 +4,5 @@ const SHIPPED_MEDIA = {
   "evento:desayuno:estirandose": { "image": "assets/editor-media/evento-desayuno-estirandose.jpg" },
   "evento:desayuno:sonriendo-plato": { "image": "assets/editor-media/evento-desayuno-sonriendo-plato.jpg" },
 };
+
+const SHIPPED_VIDEOS = ["assets/videos/video-01.mp4"];

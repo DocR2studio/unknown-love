@@ -1430,6 +1430,8 @@ function applyV29Story(data) {
 }
 
 const STORY_PATCH_KEY = "eva_novela_story_v31";
+var MEDIA_PICKS = {};
+
 
 function editableStory() {
   return JSON.parse(JSON.stringify({
@@ -1464,7 +1466,8 @@ function editableStory() {
     balanceVersion: 24,
     introCine: { shots: INTRO_CINE.shots, dawnText: INTRO_CINE.dawnText, wake: INTRO_CINE.wake },
     missions: MISSIONS,
-    storyEvents: STORY_EVENTS
+    storyEvents: STORY_EVENTS,
+    mediaPicks: typeof MEDIA_PICKS !== "undefined" ? MEDIA_PICKS : {}
   }));
 }
 
@@ -1539,6 +1542,9 @@ function applyEditableStory(data) {
   applyV26Story(data);
   applyV27Story(data);
   applyV29Story(data);
+  if (data.mediaPicks && typeof data.mediaPicks === "object") {
+    MEDIA_PICKS = JSON.parse(JSON.stringify(data.mediaPicks));
+  }
   ensureEditorEvents();
 }
 

@@ -97,6 +97,9 @@ const MediaStore = (() => {
   }
 
   function shippedPath(id, kind) {
+    if (typeof MEDIA_PICKS !== "undefined" && MEDIA_PICKS && MEDIA_PICKS[id] && MEDIA_PICKS[id][kind]) {
+      return MEDIA_PICKS[id][kind];
+    }
     if (typeof SHIPPED_MEDIA === "undefined" || !SHIPPED_MEDIA) return null;
     const rec = SHIPPED_MEDIA[id];
     return (rec && rec[kind]) || null;

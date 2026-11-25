@@ -3742,3 +3742,45 @@ html:not(.is-locked) #entry-gate { display: none !important; }
 @media (prefers-reduced-motion: reduce) {
   #entry-gate .gate-card.is-shaking { animation: none; }
 }
+
+.event-vid,
+.eva-scene-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center center;
+  display: none;
+  z-index: 1;
+  background: #050508;
+  pointer-events: none;
+}
+.event-shot.has-video .event-vid,
+.eva-scene-slot.has-video .eva-scene-video { display: block; }
+.event-shot.has-video .event-img,
+.event-shot.has-video .event-ph { display: none; }
+.event-shot.fx-kb-in.has-video .event-vid { animation: event-kb-in var(--event-dur, 18s) linear forwards; }
+.event-shot.fx-kb-out.has-video .event-vid { animation: event-kb-out var(--event-dur, 18s) linear forwards; }
+.event-shot.fx-kb-left.has-video .event-vid { animation: event-kb-left var(--event-dur, 18s) linear forwards; }
+.event-shot.fx-kb-right.has-video .event-vid { animation: event-kb-right var(--event-dur, 18s) linear forwards; }
+.editor-previews video.prev {
+  width: 100%;
+  max-height: 180px;
+  object-fit: contain;
+  background: #050508;
+  display: block;
+}
+.shipped-video-pick {
+  display: inline-flex;
+  align-items: center;
+}
+.shipped-video-pick select {
+  font: inherit;
+  color: var(--paper);
+  background: rgba(0,0,0,0.35);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 4px 6px;
+  max-width: 16em;
+}
