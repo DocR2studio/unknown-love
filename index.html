@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="es" class="is-locked">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
@@ -9,13 +9,46 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="screen-orientation" content="landscape">
   <title>Título del juego</title>
-  <link rel="manifest" href="manifest.json?v=29">
-  <link rel="icon" href="assets/logo-eva.jpg">
-  <link rel="apple-touch-icon" href="assets/logo-eva.jpg">
-  <link rel="stylesheet" href="style.css?v=29">
+  <style>
+    html.is-locked, html.is-locked body { background: #050508 !important; }
+    html.is-locked #app,
+    html.is-locked #rotate-overlay,
+    html.is-locked #rotate-overlay.is-visible { display: none !important; visibility: hidden !important; pointer-events: none !important; }
+    html:not(.is-locked) #entry-gate { display: none !important; }
+    #entry-gate {
+      position: fixed; inset: 0; z-index: 10000;
+      display: flex; align-items: center; justify-content: center;
+      background: #050508; color: #f3efe6;
+      font-family: "Outfit VN", "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+      padding: max(24px, env(safe-area-inset-top, 0px)) max(24px, env(safe-area-inset-right, 0px)) max(24px, env(safe-area-inset-bottom, 0px)) max(24px, env(safe-area-inset-left, 0px));
+    }
+  </style>
+  <script>
+    (function () {
+      try {
+        if (localStorage.getItem("eva_novela_gate_v1") === "537d65ecd0968194eb24e215050bc263e9fc0ee6ba9eed04324310e3698a8d58") {
+          document.documentElement.classList.remove("is-locked");
+        }
+      } catch (e) {}
+    })();
+  </script>
+  <link rel="manifest" href="manifest.json?v=30">
+  <link rel="icon" id="app-icon" href="data:,">
+  <link rel="apple-touch-icon" id="app-apple-icon" href="data:,">
+  <link rel="stylesheet" href="style.css?v=30">
+  <script src="gate.js?v=30"></script>
 </head>
 <body>
 
+  <div id="entry-gate" role="dialog" aria-modal="true" aria-labelledby="gate-title">
+    <div class="gate-card name-inner">
+      <p class="kicker">Acceso</p>
+      <h2 class="name-title" id="gate-title">Introduce la clave</h2>
+      <input id="input-gate" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]*" autocomplete="off" placeholder="••••" enterkeyhint="done" aria-label="Clave">
+      <p id="gate-error" class="pin-error" hidden>Clave incorrecta</p>
+      <button type="button" id="btn-gate" class="btn btn-primary">Entrar</button>
+    </div>
+  </div>
   <div id="rotate-overlay" role="dialog" aria-label="Gira tu celular">
     <div class="rotate-card">
       <svg class="rotate-icon" viewBox="0 0 88 88" aria-hidden="true">
@@ -47,9 +80,9 @@
         <p class="kicker">Potenciado por</p>
         <div class="brand-row">
           <div class="brand-card">
-            <img src="assets/logo-eva.jpg?v=29" alt="Eva_D2studio" class="brand-logo" width="900" height="900">
+            <img data-src="assets/logo-eva.jpg?v=30" alt="Eva_D2studio" class="brand-logo" width="900" height="900">
           </div>
-          <img src="assets/verificado.png?v=29" alt="Verificado" class="brand-check">
+          <img data-src="assets/verificado.png?v=30" alt="Verificado" class="brand-check">
         </div>
         <p class="brand-name">Eva_D2studio</p>
       </div>
@@ -90,13 +123,13 @@
       <div class="title-stage-wrap">
         <div class="title-stage" id="title-stage">
           <h1 class="title-logo-wrap">
-            <img class="title-logo" src="assets/title/logo.png?v=29" alt="Unknown Love" width="475" height="263">
+            <img class="title-logo" data-src="assets/title/logo.png?v=30" alt="Unknown Love" width="475" height="263">
           </h1>
           <div class="title-eyes">
-            <img class="title-eyes-top" src="assets/title/ojos-enojada.png?v=29" alt="" width="430" height="215">
-            <img class="title-eyes-bot" src="assets/title/ojos-enamorada.png?v=29" alt="" width="430" height="215">
+            <img class="title-eyes-top" data-src="assets/title/ojos-enojada.png?v=30" alt="" width="430" height="215">
+            <img class="title-eyes-bot" data-src="assets/title/ojos-enamorada.png?v=30" alt="" width="430" height="215">
           </div>
-          <img class="title-eva" src="assets/title/eva.png?v=29" alt="" width="214" height="705">
+          <img class="title-eva" data-src="assets/title/eva.png?v=30" alt="" width="214" height="705">
           <div class="title-actions">
             <button type="button" id="btn-jugar" class="title-btn">Jugar</button>
             <button type="button" id="btn-title-cargar" class="title-btn" disabled>Cargar</button>
@@ -357,9 +390,9 @@
           </div>
           <div id="phone-home" class="phone-body phone-home">
             <div class="phone-apps">
-              <button type="button" class="phone-app" data-app="contacts"><img class="phone-app-icon" src="assets/phone/app-contactos.png?v=29" alt=""><span>Contactos</span></button>
-              <button type="button" class="phone-app" data-app="camera"><img class="phone-app-icon" src="assets/phone/app-camara.png?v=29" alt=""><span>Cámara</span></button>
-              <button type="button" class="phone-app" data-app="info"><img class="phone-app-icon" src="assets/phone/app-info.png?v=29" alt=""><span>Info</span></button>
+              <button type="button" class="phone-app" data-app="contacts"><img class="phone-app-icon" data-src="assets/phone/app-contactos.png?v=30" alt=""><span>Contactos</span></button>
+              <button type="button" class="phone-app" data-app="camera"><img class="phone-app-icon" data-src="assets/phone/app-camara.png?v=30" alt=""><span>Cámara</span></button>
+              <button type="button" class="phone-app" data-app="info"><img class="phone-app-icon" data-src="assets/phone/app-info.png?v=30" alt=""><span>Info</span></button>
             </div>
           </div>
           <div id="phone-app" class="phone-body phone-app-screen" hidden>
@@ -400,10 +433,10 @@
 
 
   </div>
-  <script src="vendor/jszip.min.js?v=29"></script>
-  <script src="story.js?v=29"></script>
-  <script src="eva-sils.js?v=29"></script>
-  <script src="media.js?v=29"></script>
-  <script src="engine.js?v=29"></script>
+  <script src="vendor/jszip.min.js?v=30"></script>
+  <script src="story.js?v=30"></script>
+  <script src="eva-sils.js?v=30"></script>
+  <script src="media.js?v=30"></script>
+  <script src="engine.js?v=30"></script>
 </body>
 </html>

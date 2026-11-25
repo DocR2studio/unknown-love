@@ -593,7 +593,7 @@ body { min-height: 100dvh; }
   font-size: 2rem;
   margin: 0 0 1.4rem;
 }
-#input-nombre, #input-pin {
+#input-nombre, #input-pin, #input-gate {
   width: 100%;
   background: rgba(255,255,255,0.06);
   border: 1px solid var(--line);
@@ -606,7 +606,7 @@ body { min-height: 100dvh; }
   margin-bottom: 1rem;
   outline: none;
 }
-#input-nombre:focus, #input-pin:focus { border-color: var(--gold); }
+#input-nombre:focus, #input-pin:focus, #input-gate:focus { border-color: var(--gold); }
 .pin-error { color: #e25a5a; font-size: 0.85rem; margin: -0.4rem 0 0.8rem; }
 
 /* ---- HUD ---- */
@@ -992,7 +992,7 @@ body { min-height: 100dvh; }
 
 /* Name / PIN compact */
 .name-title { font-size: 1.55rem; margin: 0 0 0.85rem; }
-#input-nombre, #input-pin { margin-bottom: 0.7rem; padding: 0.7rem 0.8rem; font-size: 1.05rem; }
+#input-nombre, #input-pin, #input-gate { margin-bottom: 0.7rem; padding: 0.7rem 0.8rem; font-size: 1.05rem; }
 .name-inner .btn.btn-primary { width: auto; min-width: 200px; }
 
 /* Game HUD compact bottom-left */
@@ -3695,4 +3695,50 @@ body { min-height: 100dvh; }
   border: 1px dashed rgba(243, 239, 230, 0.22);
   border-radius: 8px;
   background: #111218;
+}
+
+/* Entry gate (before rotate / aviso / title) */
+html.is-locked #app,
+html.is-locked #rotate-overlay,
+html.is-locked #rotate-overlay.is-visible {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+html:not(.is-locked) #entry-gate { display: none !important; }
+#entry-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  color: var(--paper);
+  text-align: center;
+  padding: calc(24px + var(--safe-top)) calc(24px + var(--safe-right)) calc(24px + var(--safe-bot)) calc(24px + var(--safe-left));
+}
+#entry-gate .gate-card {
+  width: min(22em, 100%);
+}
+#entry-gate .kicker { margin: 0 0 0.4rem; }
+#input-gate {
+  letter-spacing: 0.35em;
+}
+#entry-gate .btn.btn-primary {
+  width: auto;
+  min-width: 200px;
+}
+#entry-gate .gate-card.is-shaking {
+  animation: gate-shake 0.38s ease;
+}
+@keyframes gate-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-10px); }
+  40% { transform: translateX(10px); }
+  60% { transform: translateX(-6px); }
+  80% { transform: translateX(6px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #entry-gate .gate-card.is-shaking { animation: none; }
 }

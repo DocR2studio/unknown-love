@@ -5039,6 +5039,10 @@
   function updateRotateOverlay() {
     const el = $("rotate-overlay");
     if (!el) return;
+    if (document.documentElement.classList.contains("is-locked")) {
+      el.classList.remove("is-visible");
+      return;
+    }
     el.classList.toggle("is-visible", isPortraitPhone());
   }
   function tryLockLandscape() {
@@ -5238,11 +5242,22 @@
 
   window.__VN = { showScreen, enterHouse, openMap, openEditor, openName, playBoot, showFullLine, advance, playTitleIntro, openBag, openSettings, openPhone, openChatThread, openTasks, travelTo, setPeek, getExpr: () => currentExpr, getState: () => state, openEvaMeet, closeEvaMeet, addAfecto, setAfecto, addEvaInfoBar, setEvaInfoBar, setEditorLive, ejectFromHouse, evaStatus: currentEvaStatus, weekdayName: (d) => weekdayName(d != null ? d : state.day), renderHUD, renderActions, showRoomEva, isEvaHere, isEvaCleaning, currentSceneVariant, isEvaSleeping, refreshRoomVisual, startIntroCine, skipIntroCine, startMission, completeMission, maybeTriggerEvent, renderHotspots, eventDoorTargets, pickElogiarTier, playAccionOption, findAccionOption, applyStatDelta, buildEvaMeetMenu, playEventSequence, stopEventSequence };
 
-  document.addEventListener("DOMContentLoaded", () => {
+  let bootStarted = false;
+  function bootWhenReady() {
+    if (bootStarted) return;
+    bootStarted = true;
+    if (window.EntryGate && typeof EntryGate.revealAssets === "function") EntryGate.revealAssets();
     bind();
     loadSettings();
     refreshTitleButtons();
     MediaStore.open().catch(() => {});
     playBoot();
+  }
+  document.addEventListener("DOMContentLoaded", () => {
+    if (window.EntryGate && !EntryGate.isOpen()) {
+      EntryGate.onUnlock(bootWhenReady);
+      return;
+    }
+    bootWhenReady();
   });
 })();
