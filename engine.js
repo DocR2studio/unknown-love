@@ -39,7 +39,7 @@
     missions: { active: [], done: [] },
     eventsDone: [],
     introCine: false,
-    settings: { music: 70, sfx: 70, textSpeed: "normal" }
+    settings: { music: 70, musicMuted: false, sfx: 70, textSpeed: "normal" }
   };
   let editorLive = false;
   try { editorLive = sessionStorage.getItem("eva_novela_editor_live") === "1"; } catch (e) { /* ignore */ }
@@ -79,6 +79,24 @@
     });
     if (id === "title") playTitleIntro();
     refreshEditorLiveBar();
+    musicSync(id);
+  }
+  /* Música: título/menú → intro-menu; intro del juego → intro; partida → juego. */
+  function applyMusicSettings() {
+    if (typeof MusicDirector === "undefined") return;
+    const s = state.settings || {};
+    MusicDirector.setSettings(Number(s.music), !!s.musicMuted);
+  }
+  function musicSync(screenId) {
+    if (typeof MusicDirector === "undefined") return;
+    const sc = document.querySelector(".screen.is-on");
+    const id = screenId || (sc ? sc.id.replace(/^screen-/, "") : "");
+    let want;
+    if (id === "game") want = state.phase === "intro" ? "intro" : "juego";
+    else if (["warning", "powered", "legal", "aviso", "title", "name"].indexOf(id) !== -1) want = "intro-menu";
+    else if (id === "closed") want = null;
+    else return;
+    MusicDirector.request(want);
   }
 
   let titleTimer = null;
@@ -207,12 +225,13 @@
   function loadSettings() {
     try {
       const raw = localStorage.getItem(SETTINGS_KEY);
-      if (!raw) return;
+      if (!raw) { applyMusicSettings(); return; }
       const data = JSON.parse(raw);
       if (data && typeof data === "object") {
         state.settings = Object.assign(state.settings, data);
       }
     } catch (e) { /* ignore */ }
+    applyMusicSettings();
   }
   function saveSettings() {
     try {
@@ -693,6 +712,7 @@
   /* ---------- Intro after name ---------- */
   function startIntroStory() {
     state.phase = "intro";
+    musicSync();
     state.location = HOUSE.start;
     state.lineIndex = 0;
     state.talking = "intro";
@@ -732,6 +752,7 @@
     const loc = locById(locId) || locById(HOUSE.start);
     const fromIntro = state.phase === "intro";
     state.phase = "house";
+    musicSync();
     if (fromIntro) {
       state.day = 1;
       state.moment = "mañana";
@@ -766,10 +787,16 @@
   }
   function ayudarEvaAction() {
     const src = (typeof EVA_ROOM_ACTIONS !== "undefined" && EVA_ROOM_ACTIONS.ayudarEva) || {
-      id: "ayudar-eva", label: "Ayudar a Eva", recover: "ayudar", energia: -5, vinculo: 1,
+      id: "ayudar-eva", label: "Ayudar a Eva", energia: -5,
       text: "Echas una mano con la limpieza. Eva lo agradece."
     };
-    return Object.assign({}, src);
+    const out = Object.assign({}, src);
+    /* v35: +5 Corazón y +10 Paciencia (aunque un guardado local viejo traiga otros valores). */
+    out.afecto = 5;
+    out.paciencia = 10;
+    delete out.recover;
+    delete out.vinculo;
+    return out;
   }
   function actionNeedsUnmet(act) {
     if (!act) return false;
@@ -924,7 +951,8 @@
       morada: act.morada,
       paciencia: paciencia
     });
-    if (applied && applied.paciencia) showStatDelta({ paciencia: applied.paciencia });
+    if (applied && act.id === "ayudar-eva") showStatDelta({ afecto: applied.afecto, paciencia: applied.paciencia });
+    else if (applied && applied.paciencia) showStatDelta({ paciencia: applied.paciencia });
     if (act.recover) recoverPaciencia(act.recover);
     const advances = act.advance === "day" || act.advance === "moment";
     if (!advances) countActivity();
@@ -1500,6 +1528,13 @@
           buildEvaMeetMenu();
         });
       });
+      /* Preparado (v35): variantes de una opción (p. ej. «Opción B» de Masaje). Sin datos activos no hay botones. */
+      shown.forEach((opt) => {
+        ((opt && Array.isArray(opt.variants)) ? opt.variants : []).forEach((v) => {
+          if (!v || v.enabled !== true || !v.id || !v.label) return;
+          appendMeetOption(box, v.label, () => playAccionOption(Object.assign({}, opt, v, { variants: [] })), null, null);
+        });
+      });
       if (editorLive) appendAddButton(box, "Añadir recuadro", () => {
         const addTo = shownList;
         addTo.push({ id: "o" + Date.now(), label: "Nueva opción", need: 0, ok: { expr: "neutral", eva: "De acuerdo.", vinculo: 1 } });
@@ -1866,12 +1901,63 @@
     }
     autosave();
   }
+  const eventContentCache = {};
+  let eventChecking = false;
+  const EVENT_PLACEHOLDER_TEXT = "texto del evento";
+  function linesHaveText(lines) {
+    return Array.isArray(lines) && lines.some((l) => {
+      const s = String((l && l.text) || "").trim().toLowerCase();
+      return s && s !== EVENT_PLACEHOLDER_TEXT;
+    });
+  }
+  function choicesHaveText(ch) {
+    return Array.isArray(ch) && ch.some((c) => c && (String(c.label || "").trim() || linesHaveText(c.lines)));
+  }
+  function convHasText(c) {
+    if (Array.isArray(c)) return linesHaveText(c);
+    if (c && c.nodes) {
+      return Object.keys(c.nodes).some((k) => {
+        const n = c.nodes[k];
+        return n && (linesHaveText(n.lines) || choicesHaveText(n.choices));
+      });
+    }
+    return false;
+  }
+  /* Un evento sin texto ni imagen/video no se muestra como pantalla vacía. */
+  async function eventHasContent(ev) {
+    let has = false;
+    if (ev) {
+      if (convHasText(ev.lines) || convHasText(ev.close)) has = true;
+      const shots = Array.isArray(ev.shots) ? ev.shots : [];
+      for (let i = 0; i < shots.length && !has; i++) {
+        const s = shots[i] || {};
+        if (linesHaveText(s.lines) || choicesHaveText(s.choices) || s.image || s.video) { has = true; break; }
+        try {
+          const m = await resolveEventShotMedia(ev, s);
+          if (m && (m.image || m.video)) has = true;
+        } catch (e) { /* ignore */ }
+      }
+      eventContentCache[ev.id] = has;
+    }
+    return has;
+  }
+  async function warmEventContent() {
+    let changed = false;
+    for (const ev of storyEvents()) {
+      if (!ev || !ev.id) continue;
+      const before = eventContentCache[ev.id];
+      await eventHasContent(ev);
+      if (before !== eventContentCache[ev.id]) changed = true;
+    }
+    if (changed && state.phase === "house") { try { renderHotspots(); } catch (e) { /* ignore */ } }
+  }
   function eventWasPlayed(id) {
     return !!id && (state.eventsDone || []).indexOf(id) !== -1;
   }
   function eventPending(ev) {
     if (!ev || !ev.id || !ev.location) return false;
-    if (ev.repeatable !== true && eventWasPlayed(ev.id)) return false;
+    /* v35: un evento jugado no vuelve a aparecer nunca (se ignora «repetible»). */
+    if (eventWasPlayed(ev.id)) return false;
     if (ev.enabled === false) return false;
     if (ev.moment && ev.moment !== state.moment) return false;
     if (ev.minDay && (state.day || 0) < ev.minDay) return false;
@@ -1883,7 +1969,7 @@
   function eventDoorTargets(locId) {
     const out = new Set();
     if (state.phase !== "house" || typeof DOORS === "undefined") return out;
-    const targets = storyEvents().filter(eventPending).map((ev) => ev.location);
+    const targets = storyEvents().filter((ev) => eventPending(ev) && eventContentCache[ev.id] !== false).map((ev) => ev.location);
     if (!targets.length) return out;
     const rev = {};
     Object.keys(DOORS).forEach((from) => {
@@ -1944,20 +2030,25 @@
     setImg(custom.imageURL || loc.image || "");
   }
   function maybeTriggerEvent() {
-    if (state.phase !== "house" || state.talking || state.evaMeet || traveling || state.eventCine) return false;
-    const ev = storyEvents().find((e) => eventPending(e) && e.location === state.location);
-    if (!ev) return false;
-    if (Array.isArray(ev.shots) && ev.shots.length) {
-      playEventSequence(ev);
-      return true;
-    }
-    if (Array.isArray(ev.lines) && ev.lines.length) {
-      playStoryEvent(ev);
-      return true;
-    }
-    return false;
+    if (state.phase !== "house" || state.talking || state.evaMeet || traveling || state.eventCine || eventChecking) return false;
+    const cands = storyEvents().filter((e) => eventPending(e) && e.location === state.location);
+    if (!cands.length) { warmEventContent(); return false; }
+    eventChecking = true;
+    (async () => {
+      let ev = null;
+      for (const c of cands) {
+        if (await eventHasContent(c)) { ev = c; break; }
+      }
+      eventChecking = false;
+      if (!ev) { renderHotspots(); return; }
+      if (!eventPending(ev) || state.phase !== "house" || state.talking || state.evaMeet || traveling || state.eventCine || state.location !== ev.location) return;
+      if (Array.isArray(ev.shots) && ev.shots.length) playEventSequence(ev);
+      else if (Array.isArray(ev.lines) && ev.lines.length) playStoryEvent(ev);
+    })().catch(() => { eventChecking = false; });
+    return true;
   }
   function playStoryEvent(ev) {
+    if (!ev || eventWasPlayed(ev.id)) return;
     closeEvaMeet(true);
     showPlainLocationBg(locById(state.location));
     markEventDone(ev && ev.id);
@@ -2156,7 +2247,8 @@
     return { start: "ask", nodes: nodes };
   }
   async function playEventSequence(ev) {
-    if (!ev || !Array.isArray(ev.shots) || !ev.shots.length) {
+    if (!ev || eventWasPlayed(ev.id)) return;
+    if (!Array.isArray(ev.shots) || !ev.shots.length) {
       playStoryEvent(ev);
       return;
     }
@@ -2340,6 +2432,7 @@
       return;
     }
     state.phase = "intro";
+    musicSync();
     state.location = HOUSE.start;
     state.lineIndex = 0;
     state.talking = null;
@@ -2435,6 +2528,7 @@
     if (run !== cineRun) return;
     const firstId = (typeof INTRO_CINE !== "undefined" && INTRO_CINE.firstMission) || "";
     state.phase = "intro";
+    musicSync();
     state.missions = { active: missionById(firstId) ? [firstId] : [], done: [] };
     state.eventsDone = [];
     state.introCine = true;
@@ -2566,6 +2660,7 @@
     state.pendingKick = false;
     state.missions = normalizeMissions(snap.missions);
     state.eventsDone = Array.isArray(snap.eventsDone) ? snap.eventsDone.slice() : [];
+    stopEventSequence();
     state.introCine = !!snap.introCine;
     setPeek(false);
     hideModals();
@@ -2899,6 +2994,7 @@
   function syncSettingsForm() {
     const s = state.settings;
     if ($("set-music")) $("set-music").value = String(s.music);
+    if ($("set-music-mute")) $("set-music-mute").checked = !!s.musicMuted;
     if ($("set-sfx")) $("set-sfx").value = String(s.sfx);
     if ($("set-speed")) $("set-speed").value = s.textSpeed || "normal";
     const fs = document.fullscreenElement || document.webkitFullscreenElement;
@@ -3384,7 +3480,8 @@
     return (v > 0 ? "+" : "") + v;
   }
   function showStatDelta(delta) {
-    const host = $("eva-meet") || $("screen-game");
+    const meetEl = $("eva-meet");
+    const host = (meetEl && !meetEl.hidden) ? meetEl : ($("screen-game") || meetEl);
     if (!host || !delta) return;
     host.querySelectorAll(".eva-delta").forEach((el) => el.remove());
     const labels = (typeof EVA_DELTA_LABELS !== "undefined" && EVA_DELTA_LABELS) || {
@@ -4388,6 +4485,56 @@
     });
     return "linea-" + (max + 1);
   }
+  async function renderMusicCard() {
+    const card = document.createElement("article");
+    card.className = "editor-card editor-music-card";
+    const h = document.createElement("h3");
+    h.textContent = "Música";
+    card.appendChild(h);
+    const note = document.createElement("p");
+    note.className = "editor-note";
+    note.textContent = "Menú/título: bucle sin cortes. Intro: durante la intro. Juego: de fondo durante la partida. Puedes reemplazar cada pista; «Restaurar de fábrica» vuelve a la incluida.";
+    card.appendChild(note);
+    const rows = [
+      ["intro-menu", "Menú / título (bucle)"],
+      ["intro", "Intro del juego"],
+      ["juego", "Música del juego (bucle)"]
+    ];
+    for (const pair of rows) {
+      const id = pair[0];
+      let rec = null;
+      try { rec = await MediaStore.getRecord("music:" + id, "audio"); } catch (e) { rec = null; }
+      const row = document.createElement("div");
+      row.className = "editor-music-row";
+      const name = document.createElement("span");
+      name.className = "seq-name";
+      name.textContent = pair[1] + " — " + (rec ? ("reemplazada: " + (rec.name || "audio")) : "de fábrica");
+      row.appendChild(name);
+      const actions = document.createElement("div");
+      actions.className = "editor-actions";
+      actions.appendChild(fileButton("Reemplazar", "audio/*,.mp3,.m4a,.ogg,.wav,.webm", async (f) => {
+        warnLargeMedia(f);
+        await MediaStore.put("music:" + id, "audio", f, f.name);
+        if (typeof MusicDirector !== "undefined") MusicDirector.reload(id);
+        await renderEditor();
+      }));
+      if (rec) {
+        const rm = document.createElement("button");
+        rm.type = "button";
+        rm.className = "btn btn-ghost btn-tiny";
+        rm.textContent = "Restaurar de fábrica";
+        rm.addEventListener("click", async () => {
+          await MediaStore.remove("music:" + id, "audio");
+          if (typeof MusicDirector !== "undefined") MusicDirector.reload(id);
+          await renderEditor();
+        });
+        actions.appendChild(rm);
+      }
+      row.appendChild(actions);
+      card.appendChild(row);
+    }
+    return card;
+  }
   async function renderEventsEditorCard() {
     if (typeof ensureEditorEvents === "function") ensureEditorEvents();
     const card = document.createElement("article");
@@ -4517,18 +4664,10 @@
       enLab.appendChild(en);
       enLab.appendChild(document.createTextNode(" Activado"));
       block.appendChild(enLab);
-      const repLab = document.createElement("label");
-      repLab.className = "event-enabled";
-      const rep = document.createElement("input");
-      rep.type = "checkbox";
-      rep.checked = ev.repeatable === true;
-      rep.addEventListener("change", () => {
-        ev.repeatable = !!rep.checked;
-        saveStoryPatch();
-      });
-      repLab.appendChild(rep);
-      repLab.appendChild(document.createTextNode(" Repetible (si no, solo una vez por partida)"));
-      block.appendChild(repLab);
+      const onceNote = document.createElement("p");
+      onceNote.className = "editor-note";
+      onceNote.textContent = "Cada evento se juega una sola vez por partida: una vez completado no vuelve a aparecer.";
+      block.appendChild(onceNote);
 
       const exitInp = document.createElement("select");
       [{ id: "", label: "Quedarse en el lugar" }].concat(locs.map((l) => ({ id: l.id, label: l.name || l.id }))).forEach((o) => {
@@ -4714,6 +4853,7 @@
     list.appendChild(renderBarsEditorCard());
     list.appendChild(renderAvisoCard());
     list.appendChild(renderIntroCineCard());
+    list.appendChild(await renderMusicCard());
     list.appendChild(await renderEventsEditorCard());
     list.appendChild(renderPacienciaRecoverCard());
     list.appendChild(renderEvaScheduleCard());
@@ -4766,6 +4906,24 @@
     note.className = "editor-note";
     note.textContent = "Valores exactos por nivel (BASE, T50, T100, MAX). Corazón, Rosa, Morada y Paciencia. La etiqueta de cada opción se puede cambiar, incluida Opción C.";
     card.appendChild(note);
+    const OLD_ACCION_IDS = ["ayudar", "acercarte", "mano"];
+    const oldList = ((typeof EVA_MENU !== "undefined" && EVA_MENU.accion && EVA_MENU.accion.options) || []).filter((o) => o && OLD_ACCION_IDS.indexOf(o.id) !== -1);
+    if (oldList.length) {
+      const warn = document.createElement("p");
+      warn.className = "editor-note";
+      warn.textContent = "Tu guardado local todavía tiene acciones antiguas (" + oldList.map((o) => o.label || o.id).join(", ") + "). La versión de fábrica solo trae Beso, Masaje y Tocar.";
+      card.appendChild(warn);
+      const clean = document.createElement("button");
+      clean.type = "button";
+      clean.className = "btn btn-ghost btn-tiny";
+      clean.textContent = "Quitar acciones antiguas";
+      clean.addEventListener("click", async () => {
+        EVA_MENU.accion.options = EVA_MENU.accion.options.filter((o) => !(o && OLD_ACCION_IDS.indexOf(o.id) !== -1));
+        saveStoryPatch();
+        await renderEditor();
+      });
+      card.appendChild(clean);
+    }
     const tiers = ["BASE", "T50", "T100", "MAX"];
     const fields = [
       ["afecto", "Corazón"],
@@ -5614,7 +5772,8 @@
         openPhoneApp(btn.getAttribute("data-app"));
       });
     });
-    $("set-music").addEventListener("input", () => { state.settings.music = Number($("set-music").value); saveSettings(); });
+    $("set-music").addEventListener("input", () => { state.settings.music = Number($("set-music").value); saveSettings(); applyMusicSettings(); });
+    if ($("set-music-mute")) $("set-music-mute").addEventListener("change", () => { state.settings.musicMuted = $("set-music-mute").checked; saveSettings(); applyMusicSettings(); });
     $("set-sfx").addEventListener("input", () => { state.settings.sfx = Number($("set-sfx").value); saveSettings(); });
     $("set-speed").addEventListener("change", () => { state.settings.textSpeed = $("set-speed").value; saveSettings(); });
     $("btn-fullscreen").addEventListener("click", (e) => { e.stopPropagation(); toggleFullscreen(); });
@@ -5688,7 +5847,7 @@
     });
   }
 
-  window.__VN = { showScreen, enterHouse, openMap, openEditor, openName, playBoot, showFullLine, advance, playTitleIntro, openBag, openSettings, openPhone, openChatThread, openTasks, travelTo, setPeek, getExpr: () => currentExpr, getState: () => state, openEvaMeet, closeEvaMeet, addAfecto, setAfecto, addEvaInfoBar, setEvaInfoBar, setEditorLive, ejectFromHouse, evaStatus: currentEvaStatus, weekdayName: (d) => weekdayName(d != null ? d : state.day), renderHUD, renderActions, showRoomEva, isEvaHere, isEvaCleaning, currentSceneVariant, isEvaSleeping, refreshRoomVisual, startIntroCine, skipIntroCine, startMission, completeMission, maybeTriggerEvent, renderHotspots, eventDoorTargets, pickElogiarTier, playAccionOption, findAccionOption, applyStatDelta, buildEvaMeetMenu, playEventSequence, stopEventSequence, snapshot, applySnapshot, markEventDone, eventPending, eventWasPlayed, showMeetScene, getScenePlaylist: () => scenePlaylist, setMediaVideos, mutableVideoRefs, clearSlotMedia };
+  window.__VN = { showScreen, enterHouse, openMap, openEditor, openName, playBoot, showFullLine, advance, playTitleIntro, openBag, openSettings, openPhone, openChatThread, openTasks, travelTo, setPeek, getExpr: () => currentExpr, getState: () => state, openEvaMeet, closeEvaMeet, addAfecto, setAfecto, addEvaInfoBar, setEvaInfoBar, setEditorLive, ejectFromHouse, evaStatus: currentEvaStatus, weekdayName: (d) => weekdayName(d != null ? d : state.day), renderHUD, renderActions, showRoomEva, isEvaHere, isEvaCleaning, currentSceneVariant, isEvaSleeping, refreshRoomVisual, startIntroCine, skipIntroCine, startMission, completeMission, maybeTriggerEvent, renderHotspots, eventDoorTargets, pickElogiarTier, playAccionOption, findAccionOption, applyStatDelta, buildEvaMeetMenu, playEventSequence, stopEventSequence, snapshot, applySnapshot, markEventDone, eventPending, eventWasPlayed, eventHasContent, showMeetScene, getScenePlaylist: () => scenePlaylist, musicSync, setMediaVideos, mutableVideoRefs, clearSlotMedia };
 
   let bootStarted = false;
   function bootWhenReady() {

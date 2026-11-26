@@ -3822,3 +3822,12 @@ html:not(.is-locked) #entry-gate { display: none !important; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.settings-panel .set-row-check { display: flex; align-items: center; gap: 0.5rem; }
+.editor-music-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin: 0.45rem 0;
+  font-size: 0.85rem;
+}

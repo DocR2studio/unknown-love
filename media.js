@@ -172,6 +172,9 @@ const MediaStore = (() => {
     if (t.includes("png")) return ".png";
     if (t.includes("webp")) return ".webp";
     if (t.includes("gif")) return ".gif";
+    if (t.includes("mpeg") || t.includes("mp3")) return ".mp3";
+    if (t.includes("ogg")) return ".ogg";
+    if (t.includes("wav")) return ".wav";
     if (t.includes("mp4")) return ".mp4";
     if (t.includes("webm")) return ".webm";
     if (t.includes("quicktime") || t.includes("mp4")) return ".mp4";
@@ -190,8 +193,8 @@ const MediaStore = (() => {
     const files = {};
     for (const rec of rows) {
       if (!rec.blob) continue;
-      const kind = rec.kind === "video" ? "video" : "image";
-      const ext = extFor(rec, kind === "video" ? ".mp4" : ".jpg");
+      const kind = (rec.kind === "video" || rec.kind === "audio") ? rec.kind : "image";
+      const ext = extFor(rec, kind === "video" ? ".mp4" : (kind === "audio" ? ".mp3" : ".jpg"));
       const fname = rec.id + "-" + kind + ext;
       files[fname] = rec.blob;
       let item = manifest.items.find((i) => i.id === rec.id);

@@ -7,3 +7,10 @@ const SHIPPED_MEDIA = {
 };
 
 const SHIPPED_VIDEOS = ["assets/videos/video-01.mp4", "assets/videos/acciones-01.mp4", "assets/videos/acciones-02.mp4", "assets/videos/acciones-03.mp4"];
+
+/* Música de fábrica (v35). Si falta un archivo, esa pista simplemente no suena. */
+const SHIPPED_AUDIO = {
+  "intro-menu": "assets/audio/intro-menu.mp3",
+  "intro": "assets/audio/intro.mp3",
+  "juego": "assets/audio/juego.mp3"
+};
