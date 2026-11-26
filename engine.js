@@ -364,15 +364,19 @@
     video.classList.remove("has-src");
     try { video.load(); } catch (e) { /* ignore */ }
   }
-  function armMediaVideo(video, url) {
+  function armMediaVideo(video, url, opts) {
     if (!video) return Promise.resolve(false);
+    const loop = !(opts && opts.loop === false);
+    const autoplay = !(opts && opts.autoplay === false);
     video.muted = true;
     video.defaultMuted = true;
-    video.loop = true;
+    video.volume = 0;
+    video.loop = loop;
     video.playsInline = true;
     video.setAttribute("playsinline", "");
     video.setAttribute("webkit-playsinline", "");
     video.setAttribute("muted", "");
+    video.autoplay = autoplay;
     video.controls = false;
     video.disablePictureInPicture = true;
     video.preload = "auto";
@@ -380,6 +384,11 @@
       let done = false;
       const finish = (ok) => { if (done) return; done = true; resolve(!!ok); };
       video.onloadeddata = () => {
+        if (!autoplay) {
+          try { if (video.readyState >= 1) video.currentTime = 0; } catch (e) { /* ignore */ }
+          finish(true);
+          return;
+        }
         const p = video.play();
         if (p && typeof p.then === "function") {
           p.then(() => finish(true)).catch(() => {
@@ -398,6 +407,8 @@
     try { video.pause(); } catch (e) { /* ignore */ }
     video.onloadeddata = null;
     video.onerror = null;
+    video.ontimeupdate = null;
+    video.onended = null;
     video.removeAttribute("src");
     try { video.load(); } catch (e) { /* ignore */ }
   }
@@ -3727,32 +3738,158 @@
     if (pack.seq) playExprSeq(pack.seq);
   }
 
+  const SCENE_XFADE_MS = 700;
+  let scenePlaylist = { run: 0, urls: [], idx: 0, fading: false, front: "a" };
+
+  function sceneVideoEls() {
+    return {
+      a: $("eva-scene-video-a") || $("eva-scene-video"),
+      b: $("eva-scene-video-b")
+    };
+  }
+  function videoSrcMatches(el, url) {
+    if (!el || !url) return false;
+    const src = el.currentSrc || el.getAttribute("src") || el.src || "";
+    if (!src) return false;
+    if (src === url) return true;
+    try {
+      return new URL(src, location.href).href === new URL(url, location.href).href;
+    } catch (e) {
+      return src.indexOf(url) !== -1 || url.indexOf(src) !== -1;
+    }
+  }
+  function stopScenePlaylist() {
+    scenePlaylist.run += 1;
+    scenePlaylist.urls = [];
+    scenePlaylist.idx = 0;
+    scenePlaylist.fading = false;
+    const els = sceneVideoEls();
+    releaseMediaVideo(els.a);
+    releaseMediaVideo(els.b);
+    if (els.a) els.a.classList.remove("is-on");
+    if (els.b) els.b.classList.remove("is-on");
+    const slot = $("eva-scene-slot");
+    if (slot) slot.classList.remove("has-video", "is-xfade");
+  }
+  function hookSceneClip(el, run) {
+    if (!el) return;
+    el.ontimeupdate = () => {
+      if (run !== scenePlaylist.run || scenePlaylist.fading) return;
+      if (scenePlaylist.urls.length < 2) return;
+      const dur = el.duration || 0;
+      if (dur && Number.isFinite(dur) && (dur - (el.currentTime || 0)) <= SCENE_XFADE_MS / 1000) {
+        startSceneCrossfade(run);
+      }
+    };
+    el.onended = () => {
+      if (run !== scenePlaylist.run) return;
+      if (scenePlaylist.urls.length < 2) {
+        try { el.currentTime = 0; } catch (e) { /* ignore */ }
+        el.play().catch(() => {});
+        return;
+      }
+      if (!scenePlaylist.fading) startSceneCrossfade(run);
+    };
+  }
+  function preloadSceneClip(el, url) {
+    if (!el || !url) return Promise.resolve(false);
+    return armMediaVideo(el, url, { loop: false, autoplay: false });
+  }
+  function startSceneCrossfade(run) {
+    if (run !== scenePlaylist.run || scenePlaylist.fading) return;
+    const urls = scenePlaylist.urls;
+    if (urls.length < 2) return;
+    const els = sceneVideoEls();
+    const nextIdx = (scenePlaylist.idx + 1) % urls.length;
+    const nextUrl = urls[nextIdx];
+    if (!els.a || !els.b) {
+      const only = els.a;
+      scenePlaylist.idx = nextIdx;
+      if (only) {
+        armMediaVideo(only, nextUrl, { loop: false, autoplay: true }).then(() => hookSceneClip(only, run));
+        only.classList.add("is-on");
+      }
+      return;
+    }
+    scenePlaylist.fading = true;
+    const frontIsA = scenePlaylist.front === "a";
+    const prev = frontIsA ? els.a : els.b;
+    const next = frontIsA ? els.b : els.a;
+    const playNext = () => {
+      next.loop = false;
+      next.muted = true;
+      const p = next.play();
+      if (p && typeof p.catch === "function") {
+        p.catch(() => armMediaVideo(next, nextUrl, { loop: false, autoplay: true }));
+      }
+    };
+    if (videoSrcMatches(next, nextUrl) && next.readyState >= 1) playNext();
+    else armMediaVideo(next, nextUrl, { loop: false, autoplay: true });
+    const slot = $("eva-scene-slot");
+    if (slot) slot.classList.add("is-xfade");
+    next.classList.add("is-on");
+    prev.classList.remove("is-on");
+    scenePlaylist.idx = nextIdx;
+    scenePlaylist.front = frontIsA ? "b" : "a";
+    hookSceneClip(next, run);
+    window.setTimeout(() => {
+      if (run !== scenePlaylist.run) return;
+      try { prev.pause(); } catch (e) { /* ignore */ }
+      const after = (scenePlaylist.idx + 1) % urls.length;
+      preloadSceneClip(prev, urls[after]);
+      scenePlaylist.fading = false;
+      if (slot) slot.classList.remove("is-xfade");
+    }, SCENE_XFADE_MS + 40);
+  }
+  async function playScenePlaylist(urls) {
+    stopScenePlaylist();
+    const list = (urls || []).filter(Boolean);
+    if (!list.length) return false;
+    const run = scenePlaylist.run;
+    scenePlaylist.urls = list;
+    scenePlaylist.idx = 0;
+    scenePlaylist.front = "a";
+    const slot = $("eva-scene-slot");
+    const els = sceneVideoEls();
+    if (!els.a) return false;
+    if (slot) slot.classList.add("has-video");
+    const many = list.length > 1;
+    await armMediaVideo(els.a, list[0], { loop: !many, autoplay: true });
+    if (run !== scenePlaylist.run) return false;
+    els.a.classList.add("is-on");
+    if (els.b) els.b.classList.remove("is-on");
+    hookSceneClip(els.a, run);
+    if (many && els.b) preloadSceneClip(els.b, list[1 % list.length]);
+    return true;
+  }
   async function showMeetScene(sceneId, opts) {
     meetSceneId = sceneId || null;
     const slot = $("eva-scene-slot");
     const meet = $("eva-meet");
     if (!slot) return;
     if (!sceneId) {
+      stopScenePlaylist();
       slot.hidden = true;
       if (meet) meet.classList.remove("has-scene");
       if ($("btn-agregar-foto")) $("btn-agregar-foto").hidden = true;
       if ($("eva-scene-bg")) $("eva-scene-bg").style.backgroundImage = "";
-      releaseMediaVideo($("eva-scene-video"));
-      if (slot) slot.classList.remove("has-video");
+      slot.classList.remove("has-video", "is-xfade");
       return;
     }
-    let media = { imageURL: null, videoURL: null };
+    let media = { imageURL: null, videoURL: null, videoURLs: [] };
     try { media = await MediaStore.mediaFor(sceneId); } catch (e) { /* ignore */ }
-    const vid = $("eva-scene-video");
-    const hasVid = !!(media && media.videoURL);
+    const videoURLs = (media && media.videoURLs && media.videoURLs.length)
+      ? media.videoURLs.map(mediaAbsUrl)
+      : ((media && media.videoURL) ? [mediaAbsUrl(media.videoURL)] : []);
+    const hasVid = videoURLs.length > 0;
     const hasImg = !!(media && media.imageURL);
     const has = hasVid || hasImg;
     const showEmpty = !!(opts && opts.showEmpty);
     if (!has && !editorLive && !showEmpty) {
+      stopScenePlaylist();
       slot.hidden = true;
       if (meet) meet.classList.remove("has-scene");
       if ($("btn-agregar-foto")) $("btn-agregar-foto").hidden = true;
-      releaseMediaVideo(vid);
       return;
     }
     slot.hidden = false;
@@ -3760,8 +3897,8 @@
     slot.classList.toggle("has-video", hasVid);
     if (meet) meet.classList.add("has-scene");
     if ($("eva-scene-bg")) $("eva-scene-bg").style.backgroundImage = (!hasVid && hasImg) ? ("url('" + media.imageURL + "')") : "";
-    if (hasVid) await armMediaVideo(vid, mediaAbsUrl(media.videoURL));
-    else releaseMediaVideo(vid);
+    if (hasVid) await playScenePlaylist(videoURLs);
+    else stopScenePlaylist();
     if ($("btn-agregar-foto")) $("btn-agregar-foto").hidden = !editorLive;
   }
   function ejectFromHouse() {
@@ -3869,20 +4006,48 @@
     if (typeof SHIPPED_VIDEOS !== "undefined" && Array.isArray(SHIPPED_VIDEOS)) return SHIPPED_VIDEOS.slice();
     return ["assets/videos/video-01.mp4"];
   }
+  function mediaPickIsEmpty(rec) {
+    if (!rec) return true;
+    if (rec.image || rec.video) return false;
+    if (Object.prototype.hasOwnProperty.call(rec, "videos")) return false;
+    return true;
+  }
   function setMediaPick(id, kind, path) {
     if (typeof MEDIA_PICKS === "undefined") return;
     if (!MEDIA_PICKS[id]) MEDIA_PICKS[id] = {};
     if (path) MEDIA_PICKS[id][kind] = path;
     else delete MEDIA_PICKS[id][kind];
-    if (MEDIA_PICKS[id] && !MEDIA_PICKS[id].image && !MEDIA_PICKS[id].video) delete MEDIA_PICKS[id];
+    if (mediaPickIsEmpty(MEDIA_PICKS[id])) delete MEDIA_PICKS[id];
     saveStoryPatch();
+  }
+  function setMediaVideos(id, refs) {
+    if (typeof MEDIA_PICKS === "undefined" || !id) return;
+    if (!MEDIA_PICKS[id]) MEDIA_PICKS[id] = {};
+    if (refs == null) delete MEDIA_PICKS[id].videos;
+    else MEDIA_PICKS[id].videos = refs.slice();
+    delete MEDIA_PICKS[id].video;
+    if (mediaPickIsEmpty(MEDIA_PICKS[id])) delete MEDIA_PICKS[id];
+    saveStoryPatch();
+  }
+  async function mutableVideoRefs(id) {
+    if (typeof MEDIA_PICKS !== "undefined" && MEDIA_PICKS[id] && Array.isArray(MEDIA_PICKS[id].videos)) {
+      return MEDIA_PICKS[id].videos.slice();
+    }
+    try {
+      const media = await MediaStore.mediaFor(id);
+      if (media && media.videoRefs && media.videoRefs.length) return media.videoRefs.slice();
+    } catch (e) { /* ignore */ }
+    return [];
   }
   async function putSlotMedia(id, f) {
     if (!id || !f) return;
     warnLargeMedia(f);
     if (isVideoFile(f)) {
-      setMediaPick(id, "video", "");
-      await MediaStore.put(id, "video", f, f.name);
+      const list = await mutableVideoRefs(id);
+      const key = id + "#" + Date.now().toString(36);
+      await MediaStore.put(key, "video", f, f.name);
+      list.push("store:" + key);
+      setMediaVideos(id, list);
     } else {
       setMediaPick(id, "image", "");
       await MediaStore.put(id, "image", f, f.name);
@@ -3890,10 +4055,22 @@
   }
   async function clearSlotMedia(id) {
     if (!id) return;
+    let refs = [];
+    try {
+      const media = await MediaStore.mediaFor(id);
+      refs = (media && media.videoRefs) || [];
+    } catch (e) { /* ignore */ }
+    for (const ref of refs) {
+      const s = String(ref || "");
+      if (s.indexOf("store:") === 0) {
+        try { await MediaStore.remove(s.slice(6), "video"); } catch (e) { /* ignore */ }
+      }
+    }
     try { await MediaStore.remove(id, "image"); } catch (e) { /* ignore */ }
     try { await MediaStore.remove(id, "video"); } catch (e) { /* ignore */ }
     setMediaPick(id, "image", "");
     setMediaPick(id, "video", "");
+    setMediaVideos(id, null);
   }
   function fileButton(label, accept, onFile) {
     const lab = document.createElement("label");
@@ -3913,21 +4090,27 @@
   }
   function fillPreview(pre, media, fallbackImage) {
     pre.innerHTML = "";
-    const videoURL = media && media.videoURL;
+    const videoURLs = (media && media.videoURLs && media.videoURLs.length)
+      ? media.videoURLs
+      : ((media && media.videoURL) ? [media.videoURL] : []);
     const imageURL = (media && media.imageURL) || fallbackImage || "";
-    if (videoURL) {
-      const vid = document.createElement("video");
-      vid.className = "prev";
-      vid.muted = true;
-      vid.loop = true;
-      vid.playsInline = true;
-      vid.setAttribute("playsinline", "");
-      vid.controls = false;
-      vid.src = mediaAbsUrl(videoURL);
-      vid.play().catch(() => {});
-      pre.appendChild(vid);
+    if (videoURLs.length) {
+      pre.classList.toggle("is-seq", videoURLs.length > 1);
+      videoURLs.forEach((u) => {
+        const vid = document.createElement("video");
+        vid.className = "prev";
+        vid.muted = true;
+        vid.loop = true;
+        vid.playsInline = true;
+        vid.setAttribute("playsinline", "");
+        vid.controls = false;
+        vid.src = mediaAbsUrl(u);
+        vid.play().catch(() => {});
+        pre.appendChild(vid);
+      });
       return true;
     }
+    pre.classList.remove("is-seq");
     if (imageURL) {
       const img = document.createElement("img");
       img.className = "prev";
@@ -3969,15 +4152,16 @@
       const path = sel.value;
       sel.value = "";
       if (!path || !id) return;
-      try { await MediaStore.remove(id, "video"); } catch (e) { /* ignore */ }
-      setMediaPick(id, "video", path);
+      const list = await mutableVideoRefs(id);
+      list.push(path);
+      setMediaVideos(id, list);
       if (typeof onDone === "function") await onDone();
     });
     wrap.appendChild(sel);
     return wrap;
   }
   function hasSlotMedia(media, fallbackImage) {
-    return !!(media && (media.image || media.video || media.imageURL || media.videoURL) || fallbackImage);
+    return !!(media && (media.image || media.video || media.imageURL || media.videoURL || (media.videoURLs && media.videoURLs.length)) || fallbackImage);
   }
   async function renderExprSlot(item) {
     const media = await MediaStore.mediaFor(item.id);
@@ -4022,6 +4206,61 @@
     pre.className = "editor-previews";
     fillPreview(pre, media, item.defaultImage || "");
     card.appendChild(pre);
+    const refs = (media && media.videoRefs) ? media.videoRefs.slice() : [];
+    if (refs.length) {
+      const list = document.createElement("ol");
+      list.className = "editor-video-seq";
+      refs.forEach((ref, i) => {
+        const li = document.createElement("li");
+        const name = document.createElement("span");
+        name.className = "seq-name";
+        const s = String(ref || "");
+        name.textContent = (i + 1) + ". " + (s.indexOf("store:") === 0 ? "video subido" : (s.split("/").pop() || s));
+        li.appendChild(name);
+        const mk = (label, fn) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "btn btn-ghost btn-tiny";
+          b.textContent = label;
+          b.addEventListener("click", fn);
+          return b;
+        };
+        if (i > 0) {
+          li.appendChild(mk("↑", async () => {
+            const cur = await mutableVideoRefs(item.id);
+            if (i <= 0 || i >= cur.length) return;
+            const tmp = cur[i - 1];
+            cur[i - 1] = cur[i];
+            cur[i] = tmp;
+            setMediaVideos(item.id, cur);
+            await renderEditor();
+          }));
+        }
+        if (i < refs.length - 1) {
+          li.appendChild(mk("↓", async () => {
+            const cur = await mutableVideoRefs(item.id);
+            if (i < 0 || i >= cur.length - 1) return;
+            const tmp = cur[i + 1];
+            cur[i + 1] = cur[i];
+            cur[i] = tmp;
+            setMediaVideos(item.id, cur);
+            await renderEditor();
+          }));
+        }
+        li.appendChild(mk("Quitar", async () => {
+          const cur = await mutableVideoRefs(item.id);
+          const gone = cur.splice(i, 1)[0];
+          if (gone && String(gone).indexOf("store:") === 0) {
+            try { await MediaStore.remove(String(gone).slice(6), "video"); } catch (e) { /* ignore */ }
+          }
+          if (cur.length) setMediaVideos(item.id, cur);
+          else setMediaVideos(item.id, []);
+          await renderEditor();
+        }));
+        list.appendChild(li);
+      });
+      card.appendChild(list);
+    }
     const actions = document.createElement("div");
     actions.className = "editor-actions";
     actions.appendChild(fileButton("Agregar foto", MEDIA_ACCEPT, async (f) => {
@@ -4029,11 +4268,12 @@
       await renderEditor();
     }));
     actions.appendChild(shippedVideoPicker(item.id, () => renderEditor()));
-    if (hasSlotMedia(media, item.defaultImage) && (media.image || media.video || media.videoURL)) {
+    const customSeq = !!(media && media.custom) || !!(typeof MEDIA_PICKS !== "undefined" && MEDIA_PICKS[item.id] && (MEDIA_PICKS[item.id].videos || MEDIA_PICKS[item.id].video || MEDIA_PICKS[item.id].image));
+    if (hasSlotMedia(media, item.defaultImage) && customSeq) {
       const rm = document.createElement("button");
       rm.type = "button";
       rm.className = "btn btn-ghost btn-tiny";
-      rm.textContent = "Quitar";
+      rm.textContent = "Restaurar de fábrica";
       rm.addEventListener("click", async () => {
         await clearSlotMedia(item.id);
         await renderEditor();
@@ -5448,7 +5688,7 @@
     });
   }
 
-  window.__VN = { showScreen, enterHouse, openMap, openEditor, openName, playBoot, showFullLine, advance, playTitleIntro, openBag, openSettings, openPhone, openChatThread, openTasks, travelTo, setPeek, getExpr: () => currentExpr, getState: () => state, openEvaMeet, closeEvaMeet, addAfecto, setAfecto, addEvaInfoBar, setEvaInfoBar, setEditorLive, ejectFromHouse, evaStatus: currentEvaStatus, weekdayName: (d) => weekdayName(d != null ? d : state.day), renderHUD, renderActions, showRoomEva, isEvaHere, isEvaCleaning, currentSceneVariant, isEvaSleeping, refreshRoomVisual, startIntroCine, skipIntroCine, startMission, completeMission, maybeTriggerEvent, renderHotspots, eventDoorTargets, pickElogiarTier, playAccionOption, findAccionOption, applyStatDelta, buildEvaMeetMenu, playEventSequence, stopEventSequence, snapshot, applySnapshot, markEventDone, eventPending, eventWasPlayed };
+  window.__VN = { showScreen, enterHouse, openMap, openEditor, openName, playBoot, showFullLine, advance, playTitleIntro, openBag, openSettings, openPhone, openChatThread, openTasks, travelTo, setPeek, getExpr: () => currentExpr, getState: () => state, openEvaMeet, closeEvaMeet, addAfecto, setAfecto, addEvaInfoBar, setEvaInfoBar, setEditorLive, ejectFromHouse, evaStatus: currentEvaStatus, weekdayName: (d) => weekdayName(d != null ? d : state.day), renderHUD, renderActions, showRoomEva, isEvaHere, isEvaCleaning, currentSceneVariant, isEvaSleeping, refreshRoomVisual, startIntroCine, skipIntroCine, startMission, completeMission, maybeTriggerEvent, renderHotspots, eventDoorTargets, pickElogiarTier, playAccionOption, findAccionOption, applyStatDelta, buildEvaMeetMenu, playEventSequence, stopEventSequence, snapshot, applySnapshot, markEventDone, eventPending, eventWasPlayed, showMeetScene, getScenePlaylist: () => scenePlaylist, setMediaVideos, mutableVideoRefs, clearSlotMedia };
 
   let bootStarted = false;
   function bootWhenReady() {

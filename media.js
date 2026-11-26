@@ -104,14 +104,63 @@ const MediaStore = (() => {
     const rec = SHIPPED_MEDIA[id];
     return (rec && rec[kind]) || null;
   }
+  function shippedVideos(id) {
+    if (typeof MEDIA_PICKS !== "undefined" && MEDIA_PICKS && MEDIA_PICKS[id] && Object.prototype.hasOwnProperty.call(MEDIA_PICKS[id], "videos") && Array.isArray(MEDIA_PICKS[id].videos)) {
+      return MEDIA_PICKS[id].videos.slice();
+    }
+    if (typeof SHIPPED_MEDIA !== "undefined" && SHIPPED_MEDIA && SHIPPED_MEDIA[id] && Array.isArray(SHIPPED_MEDIA[id].videos)) {
+      return SHIPPED_MEDIA[id].videos.slice();
+    }
+    return null;
+  }
+  async function urlForVideoRef(ref) {
+    if (!ref) return "";
+    const s = String(ref);
+    if (s.indexOf("store:") === 0) {
+      const sid = s.slice(6);
+      const rec = await getRecord(sid, "video");
+      if (rec && rec.blob) return await objectURL(sid, "video");
+      return "";
+    }
+    if (/^(blob:|data:)/i.test(s)) return s;
+    return s;
+  }
   async function mediaFor(id) {
     const image = await getRecord(id, "image");
     const video = await getRecord(id, "video");
+    const custom = !!(image || video);
+    let refs = null;
+    if (typeof MEDIA_PICKS !== "undefined" && MEDIA_PICKS && MEDIA_PICKS[id] && Object.prototype.hasOwnProperty.call(MEDIA_PICKS[id], "videos") && Array.isArray(MEDIA_PICKS[id].videos)) {
+      refs = MEDIA_PICKS[id].videos.slice();
+    } else if (video) {
+      refs = ["store:" + id];
+    } else if (typeof MEDIA_PICKS !== "undefined" && MEDIA_PICKS && MEDIA_PICKS[id] && MEDIA_PICKS[id].video) {
+      refs = [MEDIA_PICKS[id].video];
+    } else if (image || (typeof MEDIA_PICKS !== "undefined" && MEDIA_PICKS && MEDIA_PICKS[id] && MEDIA_PICKS[id].image)) {
+      refs = [];
+    } else {
+      refs = shippedVideos(id);
+    }
+    const videoURLs = [];
+    const videoRefs = [];
+    if (Array.isArray(refs)) {
+      for (let i = 0; i < refs.length; i++) {
+        const url = await urlForVideoRef(refs[i]);
+        if (url) {
+          videoURLs.push(url);
+          videoRefs.push(refs[i]);
+        }
+      }
+    }
+    const singleVideoURL = videoURLs[0] || null;
     return {
       image: image || null,
       video: video || null,
+      custom: custom,
       imageURL: image ? await objectURL(id, "image") : shippedPath(id, "image"),
-      videoURL: video ? await objectURL(id, "video") : shippedPath(id, "video")
+      videoURL: singleVideoURL || (videoURLs[0] || null),
+      videoURLs: videoURLs,
+      videoRefs: videoRefs
     };
   }
 

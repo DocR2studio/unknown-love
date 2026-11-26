@@ -2773,6 +2773,7 @@ body { min-height: 100dvh; }
   inset: 0;
   z-index: 1;
   pointer-events: none;
+  background: #050508;
 }
 .eva-scene-slot[hidden] { display: none !important; }
 .eva-scene-bg {
@@ -3756,6 +3757,15 @@ html:not(.is-locked) #entry-gate { display: none !important; }
   background: #050508;
   pointer-events: none;
 }
+.eva-scene-video {
+  background: transparent;
+  opacity: 0;
+  transition: opacity 0.7s ease;
+}
+.eva-scene-video.is-on {
+  opacity: 1;
+  z-index: 2;
+}
 .event-shot.has-video .event-vid,
 .eva-scene-slot.has-video .eva-scene-video { display: block; }
 .event-shot.has-video .event-img,
@@ -3783,4 +3793,32 @@ html:not(.is-locked) #entry-gate { display: none !important; }
   border-radius: 4px;
   padding: 4px 6px;
   max-width: 16em;
+}
+
+.editor-previews.is-seq .prev {
+  object-fit: contain;
+  object-position: center;
+  background: #050508;
+}
+.editor-video-seq {
+  list-style: none;
+  margin: 0.25rem 0 0.55rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+}
+.editor-video-seq li {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--paper, #f3efe6);
+}
+.editor-video-seq .seq-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
