@@ -37,7 +37,8 @@
     pendingKick: false,
     meetSub: null,
     meetAccionGroup: null,
-    meetAccionDecide: null,
+    meetAccionScene: null,
+    evaAway: null,
     missions: { active: [], done: [] },
     eventsDone: [],
     introCine: false,
@@ -174,6 +175,7 @@
       ejected: !!state.ejected,
       missions: { active: ensureMissions().active.slice(), done: ensureMissions().done.slice() },
       eventsDone: (state.eventsDone || []).slice(),
+      evaAway: state.evaAway || null,
       introCine: !!state.introCine
     };
   }
@@ -252,11 +254,21 @@
     const wd = typeof weekdayName === "function" ? weekdayName(state.day) : "";
     return wd ? ("Día " + state.day + " · " + wd + " · " + mom) : ("Día " + state.day + " · " + mom);
   }
-  function currentEvaStatus() {
+  function rawEvaStatus() {
     if (typeof evaStatus === "function") {
       return evaStatus(state.day, state.moment, state.activityCount, state.phase);
     }
     return { loc: (typeof evaAt === "function" ? evaAt(state.moment, state.phase, state.day, state.activityCount) : null), cleaning: false, move: 0 };
+  }
+  /* v37: «Detenerse» en Acciones retira a Eva de la habitación hasta su siguiente movimiento o franja del horario. */
+  function currentEvaStatus() {
+    const st = rawEvaStatus();
+    if (state.evaAway && state.phase === "house") {
+      const key = [state.day, state.moment, st.move || 0, st.loc].join("|");
+      if (key === state.evaAway) return { loc: null, cleaning: false, move: st.move || 0, away: true };
+      state.evaAway = null;
+    }
+    return st;
   }
   function applyTimeShade() {
     const el = $("game-shade");
@@ -733,6 +745,7 @@
     state.pendingKick = false;
     state.missions = { active: [], done: [] };
     state.eventsDone = [];
+    state.evaAway = null;
     setPeek(false);
     hideModals();
     if ($("eva-eject")) $("eva-eject").hidden = true;
@@ -1504,35 +1517,41 @@
       finishMeetMenu(box);
       return;
     }
+    if (sub === "accion" && state.meetAccionScene) {
+      /* v37: dentro de la escena propia de una opción */
+      const sc = state.meetAccionScene;
+      const leaf = findAccionOption(sc.opt);
+      if (leaf && sc.i !== "end") {
+        const nFollow = (leaf.followUps || []).length;
+        if (sc.i < nFollow) {
+          appendMeetOption(box, leaf.seguirLabel || "Seguir adelante", () => playAccionScene(leaf, sc.i + 1), () => {
+            openEditModal("Botón «seguir»", leaf.seguirLabel || "Seguir adelante", (v) => { leaf.seguirLabel = v; saveStoryPatch(); buildEvaMeetMenu(); });
+          });
+        }
+        appendMeetOption(box, leaf.terminarLabel || "Detenerse", () => terminateAccion(leaf), () => {
+          openEditModal("Botón «detenerse»", leaf.terminarLabel || "Detenerse", (v) => { leaf.terminarLabel = v; saveStoryPatch(); buildEvaMeetMenu(); });
+        });
+      }
+      finishMeetMenu(box);
+      return;
+    }
     if (sub === "peticion" || sub === "accion") {
       const data = (typeof EVA_MENU !== "undefined" && EVA_MENU[sub]) || { options: [] };
       const list = data.options || [];
       const groupId = sub === "accion" ? state.meetAccionGroup : null;
-      const decideId = sub === "accion" ? state.meetAccionDecide : null;
       const group = groupId && list.find((o) => o && o.id === groupId && o.options);
-      const decideOpt = (decideId && group) ? (group.options || []).find((o) => o && o.id === decideId) : null;
-      const shown = decideOpt ? (decideOpt.choices || []) : (group ? group.options : list);
+      const shown = group ? group.options : list;
       const shownList = shown;
       shown.forEach((opt, i) => {
-        const openGroup = !group && !decideOpt && opt && opt.options && opt.options.length;
-        const openDecide = !!(group && !decideOpt && opt && Array.isArray(opt.choices) && opt.choices.length);
+        const openGroup = !group && opt && opt.options && opt.options.length;
         const run = () => {
           if (openGroup) {
             state.meetAccionGroup = opt.id;
-            state.meetAccionDecide = null;
+            state.meetAccionScene = null;
             buildEvaMeetMenu();
             return;
           }
-          if (openDecide) {
-            state.meetAccionDecide = opt.id;
-            buildEvaMeetMenu();
-            return;
-          }
-          if (decideOpt) {
-            playAccionChoice(decideOpt, opt);
-            return;
-          }
-          if (opt && opt.effects) playAccionOption(opt);
+          if (sub === "accion" && opt && opt.effects) playAccionScene(opt, 0);
           else playUnlockable(opt, opt.ok, opt.locked);
         };
         appendMeetOption(box, opt.label || "Opción", run, () => {
@@ -1545,9 +1564,9 @@
       });
       if (editorLive) appendAddButton(box, "Añadir recuadro", () => {
         const addTo = shownList;
-        if (decideOpt) {
-          if (!Array.isArray(decideOpt.choices)) decideOpt.choices = [];
-          decideOpt.choices.push({ id: "c" + Date.now(), label: "Nueva opción", exit: false, skipBalance: true, player: "", effects: (typeof blankAccionEffects === "function" ? blankAccionEffects() : {}) });
+        if (sub === "accion" && group) {
+          addTo.push({ id: "o" + Date.now(), label: "Nueva opción", skipBalance: true, player: "", effects: (typeof blankAccionEffects === "function" ? blankAccionEffects() : {}) });
+          if (typeof ensureAccionV37Scenes === "function") ensureAccionV37Scenes();
         } else {
           addTo.push({ id: "o" + Date.now(), label: "Nueva opción", need: 0, ok: { expr: "neutral", eva: "De acuerdo.", vinculo: 1 } });
         }
@@ -1555,20 +1574,15 @@
         buildEvaMeetMenu();
       });
       appendMeetOption(box, (EVA_HABLAR && EVA_HABLAR.backLabel) || "Volver", () => {
-        if (decideOpt) {
-          state.meetAccionDecide = null;
-          buildEvaMeetMenu();
-          return;
-        }
         if (group) {
           state.meetAccionGroup = null;
-          state.meetAccionDecide = null;
+          state.meetAccionScene = null;
           buildEvaMeetMenu();
           return;
         }
         state.meetSub = null;
         state.meetAccionGroup = null;
-        state.meetAccionDecide = null;
+        state.meetAccionScene = null;
         showMeetScene(null);
         buildEvaMeetMenu();
         renderEvaMeetStats();
@@ -1633,7 +1647,7 @@
     state.evaMeet = false;
     state.meetSub = null;
     state.meetAccionGroup = null;
-    state.meetAccionDecide = null;
+    state.meetAccionScene = null;
     showMeetScene(null);
     stopExprSeq();
     evaMeetBusy = false;
@@ -1701,7 +1715,7 @@
       const data = (typeof EVA_MENU !== "undefined" && EVA_MENU[id]) || {};
       state.meetSub = id;
       state.meetAccionGroup = null;
-      state.meetAccionDecide = null;
+      state.meetAccionScene = null;
       showMeetScene(data.scene || ("eva-" + id));
       buildEvaMeetMenu();
     }
@@ -2473,6 +2487,7 @@
     state.pendingKick = false;
     state.missions = { active: [], done: [] };
     state.eventsDone = [];
+    state.evaAway = null;
     state.introCine = true;
     setPeek(false);
     hideModals();
@@ -2553,6 +2568,7 @@
     musicSync();
     state.missions = { active: missionById(firstId) ? [firstId] : [], done: [] };
     state.eventsDone = [];
+    state.evaAway = null;
     state.introCine = true;
     enterHouse(HOUSE.start);
     cine.classList.add("is-leaving");
@@ -2682,6 +2698,7 @@
     state.pendingKick = false;
     state.missions = normalizeMissions(snap.missions);
     state.eventsDone = Array.isArray(snap.eventsDone) ? snap.eventsDone.slice() : [];
+    state.evaAway = (typeof snap.evaAway === "string" && snap.evaAway) ? snap.evaAway : null;
     stopEventSequence();
     state.introCine = !!snap.introCine;
     setPeek(false);
@@ -3813,71 +3830,116 @@
       for (let i = 0; i < (list || []).length; i++) {
         const g = list[i];
         if (g && g.id === id) return g;
-        const hit = walk(g && g.options) || walk(g && g.choices);
+        const hit = walk(g && g.options);
         if (hit) return hit;
       }
       return null;
     };
     return walk(opts);
   }
-  function choiceMediaKey(opt, ch) {
-    if (ch && ch.scene) return ch.scene;
-    if (typeof accionChoiceMediaKey === "function") return accionChoiceMediaKey(opt, ch);
-    return "accion:" + ((opt && opt.id) || "x") + ":" + ((ch && ch.id) || "y");
-  }
-  function choiceHasTalk(ch) {
-    if (!ch) return false;
-    if (String(ch.player || "").trim()) return true;
+  function sceneHasTalk(sc) {
+    if (!sc) return false;
+    if (String(sc.player || "").trim()) return true;
     const ev = ensureEvaInfo();
     const tier = pickElogiarTier(ev);
-    const pack = (ch.effects && (ch.effects[tier.id] || ch.effects.BASE)) || {};
-    const eva = String(pack.eva || ch.eva || "").trim();
+    const pack = (sc.effects && (sc.effects[tier.id] || sc.effects.BASE)) || {};
+    const eva = String(pack.eva || "").trim();
     return !!(eva && eva !== "…");
   }
-  async function playAccionChoice(opt, ch) {
-    if (!ch) return;
-    const sceneId = choiceMediaKey(opt, ch);
-    let hasMedia = false;
+  async function accionSceneHasMedia(key) {
     try {
-      const media = await MediaStore.mediaFor(sceneId);
-      hasMedia = !!(media && (media.videoURL || media.imageURL || (media.videoURLs && media.videoURLs.length)));
-    } catch (e) { hasMedia = false; }
-    if (hasMedia) await showMeetScene(sceneId);
-    const finish = () => {
-      if (ch.exit) {
-        state.meetSub = null;
-        state.meetAccionGroup = null;
-        state.meetAccionDecide = null;
-        showMeetScene(null);
-        if (state.evaMeet) {
-          buildEvaMeetMenu();
-          renderEvaMeetStats();
-        }
-        return;
-      }
-      state.meetAccionDecide = null;
-      const scene = (typeof EVA_MENU !== "undefined" && EVA_MENU.accion && EVA_MENU.accion.scene) || "eva-accion";
-      showMeetScene(scene);
+      const media = await MediaStore.mediaFor(key);
+      return !!(media && (media.videoURL || media.imageURL || (media.videoURLs && media.videoURLs.length)));
+    } catch (e) { return false; }
+  }
+  function applySceneStatsOnly(sc) {
+    if (!sc || !sc.effects) return;
+    const ev = ensureEvaInfo();
+    const tier = pickElogiarTier(ev);
+    const pack = sc.effects[tier.id] || sc.effects.BASE || {};
+    const applied = applyStatDelta(pack);
+    if (applied && (applied.afecto || applied.paciencia || applied.rosa || applied.morada)) showStatDelta(applied);
+  }
+  /* v37: la opción (i = 0) o una escena de «Seguir adelante» (i >= 1) abre SU PROPIA escena.
+     Las 3 videos en bucle del menú de acciones NO se muestran aquí. */
+  async function playAccionScene(leaf, i) {
+    if (!leaf) return;
+    const idx = Math.max(0, i | 0);
+    const sc = idx === 0 ? leaf : (leaf.followUps || [])[idx - 1];
+    if (!sc) return;
+    state.meetAccionScene = { opt: leaf.id, i: idx };
+    const key = accionSceneKey(leaf, idx);
+    await showMeetScene(key, { showEmpty: true });
+    const done = () => {
       if (state.evaMeet) {
         buildEvaMeetMenu();
         renderEvaMeetStats();
       }
     };
-    if (!choiceHasTalk(ch) && !hasMedia) {
-      if (ch.effects) {
-        const ev = ensureEvaInfo();
-        const tier = pickElogiarTier(ev);
-        const pack = ch.effects[tier.id] || ch.effects.BASE || {};
-        const applied = applyStatDelta(pack);
-        if (applied && (applied.afecto || applied.paciencia || applied.rosa || applied.morada)) showStatDelta(applied);
-      }
-      finish();
+    if (!sceneHasTalk(sc)) {
+      hideEvaMeetStats();
+      applySceneStatsOnly(sc);
+      if (idx === 0) countActivity();
+      renderHUD();
+      autosave();
+      done();
       return;
     }
-    talkDoneHook = finish;
-    playAccionOption(ch);
+    playAccionOption(sc, { countsAsActivity: idx === 0 });
   }
-  function playAccionOption(opt) {
+  /* Detenerse: escena de cierre opcional y salida total del menú; Eva se retira de la habitación. */
+  async function terminateAccion(leaf) {
+    if (!leaf) return;
+    const t = leaf.terminar || null;
+    state.meetAccionScene = { opt: leaf.id, i: "end" };
+    const key = accionSceneKey(leaf, "end");
+    const hasMedia = await accionSceneHasMedia(key);
+    const hasTalk = sceneHasTalk(t);
+    if (!hasTalk && !hasMedia && !editorLive) {
+      applySceneStatsOnly(t);
+      buildEvaMeetMenu();
+      await leaveAfterAccion();
+      return;
+    }
+    await showMeetScene(key, { showEmpty: true });
+    if (!hasTalk) {
+      hideEvaMeetStats();
+      applySceneStatsOnly(t);
+      buildEvaMeetMenu();
+      await wait(hasMedia ? 1800 : 600);
+      await leaveAfterAccion();
+      return;
+    }
+    talkDoneHook = () => { leaveAfterAccion(); };
+    playAccionOption(t, { countsAsActivity: false });
+  }
+  function evaAwayKey(st) {
+    return [state.day, state.moment, st.move || 0, st.loc].join("|");
+  }
+  async function leaveAfterAccion() {
+    if (state.phase === "house") {
+      const st = rawEvaStatus();
+      state.evaAway = evaAwayKey(st);
+    }
+    traveling = true;
+    const fade = $("travel-fade");
+    if (fade) fade.classList.add("is-on");
+    await wait(350);
+    state.meetAccionGroup = null;
+    state.meetAccionScene = null;
+    closeEvaMeet(true);
+    renderHUD();
+    await refreshRoomVisual();
+    autosave();
+    if (fade) {
+      fade.offsetWidth;
+      fade.classList.remove("is-on");
+    }
+    await wait(400);
+    traveling = false;
+    refreshEditorLiveBar();
+  }
+  function playAccionOption(opt, popts) {
     if (!opt) return;
     if (!opt.effects) {
       playUnlockable(opt, opt.ok, opt.locked);
@@ -3913,7 +3975,7 @@
       const w = (typeof EVA_RULES !== "undefined" && EVA_RULES.warning) || {};
       lines.push({ who: "Eva", expr: (pack.seq && pack.seq[pack.seq.length - 1]) || expr, text: w.text || "Estoy perdiendo la paciencia." });
     }
-    beginMeetTalk(lines, null, { countsAsActivity: true });
+    beginMeetTalk(lines, null, { countsAsActivity: !(popts && popts.countsAsActivity === false) });
     if (pack.seq) playExprSeq(pack.seq);
   }
 
@@ -5088,6 +5150,23 @@
     }, "Editar etiqueta"));
     host.appendChild(head);
   }
+  function fillAccionLabelRow(host, obj, field, title, fallback) {
+    const row = document.createElement("div");
+    row.className = "seq-row";
+    const lab = document.createElement("label");
+    lab.textContent = title;
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.value = obj[field] || fallback;
+    inp.addEventListener("change", () => {
+      obj[field] = inp.value.trim() || fallback;
+      inp.value = obj[field];
+      saveStoryPatch();
+    });
+    row.appendChild(lab);
+    row.appendChild(inp);
+    host.appendChild(row);
+  }
   async function fillAccionMediaRow(host, mediaId) {
     if (!mediaId || typeof MediaStore === "undefined") return;
     let media = {};
@@ -5124,7 +5203,7 @@
     card.appendChild(h);
     const note = document.createElement("p");
     note.className = "editor-note";
-    note.textContent = "Beso se queda con sus opciones. En Masaje y Tocar, cada opción abre «Seguir adelante» y «Detenerse»: puedes cambiar el nombre, el texto, la foto o el video (en bucle) y los efectos de cada rama. Detenerse, en el juego, vuelve atrás después del resultado.";
+    note.textContent = "Cada opción abre SU PROPIA escena (foto o video en bucle, texto y efectos). «Seguir adelante» lleva a otra escena distinta; «Detenerse» sale del menú por completo y Eva se retira de la habitación (la escena de cierre es opcional). Los 3 videos en bucle del menú de Acciones se editan en la escena «Eva Acción» y solo se ven en el menú.";
     card.appendChild(note);
     const OLD_ACCION_IDS = ["ayudar", "acercarte", "mano"];
     const oldList = ((typeof EVA_MENU !== "undefined" && EVA_MENU.accion && EVA_MENU.accion.options) || []).filter((o) => o && OLD_ACCION_IDS.indexOf(o.id) !== -1);
@@ -5165,20 +5244,51 @@
         const sub = document.createElement("div");
         sub.className = "accion-opt";
         fillAccionNameRow(sub, opt, "Etiqueta");
-        const branches = Array.isArray(opt.choices) && opt.choices.length ? opt.choices : null;
-        if (branches) {
-          for (const ch of branches) {
-            if (!ch) continue;
-            const box = document.createElement("div");
-            box.className = "accion-choice";
-            const chTitle = document.createElement("h5");
-            chTitle.textContent = ch.exit ? "Detenerse" : "Seguir adelante";
-            box.appendChild(chTitle);
-            fillAccionNameRow(box, ch, "Botón");
-            await fillAccionMediaRow(box, (typeof accionChoiceMediaKey === "function" ? accionChoiceMediaKey(opt, ch) : ("accion:" + opt.id + ":" + ch.id)));
-            fillAccionEffectsEditor(box, ch);
-            sub.appendChild(box);
+        const addScene = async (title, scObj, key, extra) => {
+          const box = document.createElement("div");
+          box.className = "accion-choice";
+          const hh = document.createElement("h5");
+          hh.textContent = title;
+          box.appendChild(hh);
+          if (extra) extra(box);
+          await fillAccionMediaRow(box, key);
+          fillAccionEffectsEditor(box, scObj);
+          sub.appendChild(box);
+        };
+        if (opt.effects) {
+          await addScene("Escena 1 · al tocar «" + (opt.label || opt.id) + "»", opt, accionSceneKey(opt, 0), null);
+          const follow = opt.followUps || [];
+          for (let fi = 0; fi < follow.length; fi++) {
+            const f = follow[fi];
+            await addScene("Escena " + (fi + 2) + " · después de «" + (fi === 0 ? (opt.seguirLabel || "Seguir adelante") : "Seguir adelante") + "»", f, accionSceneKey(opt, fi + 1), (box) => {
+              if (fi === 0) fillAccionLabelRow(box, opt, "seguirLabel", "Texto del botón «seguir»", "Seguir adelante");
+              if (fi === follow.length - 1 && follow.length > 1) {
+                const rmb = document.createElement("button");
+                rmb.type = "button";
+                rmb.className = "btn btn-ghost btn-tiny";
+                rmb.textContent = "Quitar esta escena";
+                rmb.addEventListener("click", async () => {
+                  opt.followUps.pop();
+                  saveStoryPatch();
+                  await renderEditor();
+                });
+                box.appendChild(rmb);
+              }
+            });
           }
+          const addMore = document.createElement("button");
+          addMore.type = "button";
+          addMore.className = "btn btn-ghost btn-tiny";
+          addMore.textContent = "Añadir otra escena de «Seguir adelante»";
+          addMore.addEventListener("click", async () => {
+            opt.followUps.push({ id: "escena-" + (opt.followUps.length + 2), player: "", skipBalance: true, effects: blankAccionEffects() });
+            saveStoryPatch();
+            await renderEditor();
+          });
+          sub.appendChild(addMore);
+          await addScene("Al detenerse · escena de cierre (opcional)", opt.terminar, accionSceneKey(opt, "end"), (box) => {
+            fillAccionLabelRow(box, opt, "terminarLabel", "Texto del botón «detener»", "Detenerse");
+          });
         } else {
           fillAccionEffectsEditor(sub, opt);
         }
@@ -5597,6 +5707,7 @@
           if (blob) await MediaStore.put(rec.id, rec.kind || "image", blob, rec.name || "foto");
         }
       }
+      await migrateAccionMediaV37(true);
       await renderEditor();
       toast("Importado.");
     } catch (err) {
@@ -5979,9 +6090,36 @@
     });
   }
 
-  window.__VN = { showScreen, enterHouse, openMap, openEditor, openName, playBoot, showFullLine, advance, playTitleIntro, openBag, openSettings, openPhone, openChatThread, openTasks, travelTo, setPeek, getExpr: () => currentExpr, getState: () => state, openEvaMeet, closeEvaMeet, addAfecto, setAfecto, addEvaInfoBar, setEvaInfoBar, setEditorLive, ejectFromHouse, evaStatus: currentEvaStatus, weekdayName: (d) => weekdayName(d != null ? d : state.day), renderHUD, renderActions, showRoomEva, isEvaHere, isEvaCleaning, currentSceneVariant, isEvaSleeping, refreshRoomVisual, startIntroCine, skipIntroCine, startMission, completeMission, maybeTriggerEvent, renderHotspots, eventDoorTargets, pickElogiarTier, playAccionOption, playAccionChoice, findAccionOption, applyStatDelta, buildEvaMeetMenu, playEventSequence, stopEventSequence, snapshot, applySnapshot, markEventDone, eventPending, eventWasPlayed, eventHasContent, showMeetScene, getScenePlaylist: () => scenePlaylist, musicSync, setMediaVideos, mutableVideoRefs, clearSlotMedia };
+  window.__VN = { showScreen, enterHouse, openMap, openEditor, openName, playBoot, showFullLine, advance, playTitleIntro, openBag, openSettings, openPhone, openChatThread, openTasks, travelTo, setPeek, getExpr: () => currentExpr, getState: () => state, openEvaMeet, closeEvaMeet, addAfecto, setAfecto, addEvaInfoBar, setEvaInfoBar, setEditorLive, ejectFromHouse, evaStatus: currentEvaStatus, weekdayName: (d) => weekdayName(d != null ? d : state.day), renderHUD, renderActions, showRoomEva, isEvaHere, isEvaCleaning, currentSceneVariant, isEvaSleeping, refreshRoomVisual, startIntroCine, skipIntroCine, startMission, completeMission, maybeTriggerEvent, renderHotspots, eventDoorTargets, pickElogiarTier, playAccionOption, playAccionScene, terminateAccion, migrateAccionMediaV37, findAccionOption, applyStatDelta, buildEvaMeetMenu, playEventSequence, stopEventSequence, snapshot, applySnapshot, markEventDone, eventPending, eventWasPlayed, eventHasContent, showMeetScene, getScenePlaylist: () => scenePlaylist, musicSync, setMediaVideos, mutableVideoRefs, clearSlotMedia };
 
   let bootStarted = false;
+  /* v37: medios de la v36 (accion:ID:seguir / :detenerse) pasan a la escena equivalente si esta está vacía. Nada se borra. */
+  async function migrateAccionMediaV37(force) {
+    try {
+      if (!force && localStorage.getItem("eva_novela_mig_v37") === "1") return;
+      const groups = (typeof EVA_MENU !== "undefined" && EVA_MENU.accion && EVA_MENU.accion.options) || [];
+      const pairs = [];
+      groups.forEach((g) => (g && g.options || []).forEach((o) => {
+        if (!o || !o.id) return;
+        pairs.push(["accion:" + o.id + ":seguir", accionSceneKey(o, 0)]);
+        pairs.push(["accion:" + o.id + ":detenerse", accionSceneKey(o, "end")]);
+      }));
+      for (const pr of pairs) {
+        for (const kind of ["image", "video"]) {
+          const rec = await MediaStore.getRecord(pr[0], kind);
+          if (!rec || !rec.blob) continue;
+          const dst = await MediaStore.getRecord(pr[1], kind);
+          if (dst && dst.blob) continue;
+          await MediaStore.put(pr[1], kind, rec.blob, rec.name);
+        }
+        if (typeof MEDIA_PICKS !== "undefined" && MEDIA_PICKS[pr[0]] && !MEDIA_PICKS[pr[1]]) {
+          MEDIA_PICKS[pr[1]] = JSON.parse(JSON.stringify(MEDIA_PICKS[pr[0]]));
+        }
+      }
+      if (typeof saveStoryPatch === "function") saveStoryPatch();
+      localStorage.setItem("eva_novela_mig_v37", "1");
+    } catch (e) { /* sin IndexedDB: nada que migrar */ }
+  }
   function bootWhenReady() {
     if (bootStarted) return;
     bootStarted = true;
@@ -5989,7 +6127,7 @@
     bind();
     loadSettings();
     refreshTitleButtons();
-    MediaStore.open().catch(() => {});
+    MediaStore.open().then(() => migrateAccionMediaV37(false)).catch(() => {});
     playBoot();
   }
   document.addEventListener("DOMContentLoaded", () => {
