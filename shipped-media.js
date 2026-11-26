@@ -3,6 +3,7 @@ const SHIPPED_MEDIA = {
   "evento:desayuno:conejito": { "image": "assets/editor-media/evento-desayuno-conejito.jpg" },
   "evento:desayuno:estirandose": { "image": "assets/editor-media/evento-desayuno-estirandose.jpg" },
   "evento:desayuno:sonriendo-plato": { "image": "assets/editor-media/evento-desayuno-sonriendo-plato.jpg" },
+  "eva-accion": { "videos": ["assets/videos/acciones-01.mp4", "assets/videos/acciones-02.mp4", "assets/videos/acciones-03.mp4"] },
 };
 
-const SHIPPED_VIDEOS = ["assets/videos/video-01.mp4"];
+const SHIPPED_VIDEOS = ["assets/videos/video-01.mp4", "assets/videos/acciones-01.mp4", "assets/videos/acciones-02.mp4", "assets/videos/acciones-03.mp4"];
